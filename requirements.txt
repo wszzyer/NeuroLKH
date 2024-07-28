@@ -1,0 +1,7 @@
+torch
+pandas
+geopandas
+shapely
+huggingface_hub
+ipdb
+osmnx

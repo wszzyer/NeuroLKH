@@ -1,0 +1,269 @@
+# Note! LKH can be compiled with gcc-8, and can't be compiled with gcc-10 which will raise compile error.
+import os
+import multiprocessing as mp
+import argparse
+import tqdm
+from itertools import cycle
+from subprocess import check_call
+import tempfile
+import pickle
+import functools
+
+import pandas as pd
+import geopandas as gpd
+import networkx as nx
+import numpy as np
+
+from fetch_data import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs
+
+fetch_lade()
+np.random.seed(114514)
+source_crs = "EPSG:4326"
+target_crs = "EPSG:32650"
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--num-cpus",
+    type=int,
+    default=32,
+    help="num cpus pool"
+)
+parser.add_argument(
+    "--n-nodes",
+    type=int,
+    default=100,
+    help="num nodes"
+)
+parser.add_argument(
+    "--n-samples",
+    type=int,
+    default=1024,
+    help="num samples"
+)
+parser.add_argument(
+    "--train-ratio",
+    type=float,
+    default=0.9,
+    help="train dataset ratio"
+)
+parser.add_argument(
+    "--citys",
+    action="append",
+    dest="citys",
+    default="yt",
+    help="citys to generate data"
+)
+args = parser.parse_args()
+
+
+def write_instance(instance, instance_name, instance_filename):
+    """
+    """
+    with open(instance_filename, "w") as f:
+        f.write("NAME : " + instance_name + "\n")
+        f.write("COMMENT : blank\n")
+        f.write("TYPE : CVRP\n")
+        f.write("DIMENSION : " + str(len(instance["COORD"])) + "\n")
+        f.write("EDGE_WEIGHT_TYPE : EXPLICIT\n")
+        f.write("EDGE_WEIGHT_FORMAT : FULL_MATRIX\n")
+        f.write("CAPACITY : " + str(instance["CAPACITY"]) + "\n")
+        f.write("EDGE_WEIGHT_SECTION\n")
+        mat_str = np.array2string(instance["WEIGHT"]).replace('[','').replace(']','').replace("\n ", "\n")
+        f.write(mat_str + "\n")
+        f.write("DEMAND_SECTION\n")
+        
+        for i, demand in enumerate(instance["DEMAND"]):
+            f.write(f"{i+1} {demand}\n")
+        f.write("DEPOT_SECTION\n " + str(instance["DEPOT"]) + "\n -1\n")
+        f.write("EOF\n")
+        
+def map_wrapper(func):
+    @functools.wraps(func)
+    def expand_args_for_func(args):
+        return func(*args)
+    return expand_args_for_func
+
+from CVRPdata_generate import write_para, read_feat, read_results
+
+@map_wrapper
+def solve_LKH(dataset_name, instance, instance_name, rerun=False, max_trials=1000):
+    para_filename = "tmp/" + dataset_name + "/LKH_para/" + instance_name + ".para"
+    log_filename = "tmp/" + dataset_name + "/LKH_log/" + instance_name + ".log"
+    instance_filename = "tmp/" + dataset_name + "/cvrp/" + instance_name + ".cvrp"
+    if rerun or not os.path.isfile(log_filename):
+        write_instance(instance, instance_name, instance_filename)
+        write_para(dataset_name, instance_name, instance_filename, "LKH", para_filename, max_trials=max_trials)
+        with open(log_filename, "w") as f:
+            check_call(["./LKH", para_filename], stdout=f)
+    return read_results(log_filename, max_trials)
+
+@map_wrapper
+def generate_feat(dataset_name, instance, instance_name, max_nodes):
+    para_filename = "tmp/" + dataset_name + "/featgen_para/" + instance_name + ".para"
+    instance_filename = "tmp/" + dataset_name + "/cvrp/" + instance_name + ".cvrp"
+    feat_filename = "tmp/" + dataset_name + "/feat/" + instance_name + ".txt"
+    write_instance(instance, instance_name, instance_filename)
+    write_para(dataset_name, instance_name, instance_filename, "FeatGenerate", para_filename)
+    with tempfile.TemporaryFile() as f:
+        check_call(["./LKH", para_filename], stdout=f)
+    return read_feat(feat_filename, max_nodes)
+
+def calc_distmat(net, care_nodes):
+    distmat = np.full((len(care_nodes), len(care_nodes)), fill_value=-1, dtype=int)
+    for u_i, u in enumerate(care_nodes):
+        distvec = nx.single_source_dijkstra_path_length(net, u)
+        distmat[u_i] = [distvec[v] for v in care_nodes]
+    mask = distmat != -1
+    distmat[~mask] = distmat[mask].mean()
+    return distmat
+
+def gen_instance(args):
+    problem_routes, graph, gdf_nodes = args
+    instance = {}
+    
+    instance["CAPACITY"] = n_nodes // len(problem_routes) + 10
+    
+    graph_coords = gdf_nodes[["y", "x"]].values
+    
+    package_coords = []
+    for df in problem_routes:
+        # map package point to graph node.
+        # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
+        package_coords.append(df[["lat", "lng"]].values)
+    package_coords = np.vstack(package_coords)
+    package_coords = transform_crs(package_coords, source_crs, target_crs)
+    corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
+    corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
+    
+    instance["COORD"] = graph_coords[corresponding_graph_index]
+    distmat = calc_distmat(graph, corresponding_graph_node)
+    distmat = (distmat + distmat.T) / 2
+    instance["WEIGHT"] = distmat.astype(int)
+    # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
+    # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
+    instance["DEPOT"] = 1
+    instance["DEMAND"] = np.ones(n_nodes, dtype=int)
+    instance["DEMAND"][instance["DEPOT"] - 1] = 0
+    
+    return instance
+
+def generate_dataset(dataset, n_nodes, save_dir):
+    n_samples = len(dataset)
+    x = np.stack([d["COORD"] for d in dataset])
+    demand = np.stack([d["DEMAND"] for d in dataset])
+    dist = np.stack([d["WEIGHT"] for d in dataset])
+    if save_dir == "CVRP_test":
+        with open(save_dir + "/cvrp_" + str(n_nodes) + ".pkl", "wb") as f:
+            pickle.dump(dataset, f)
+        return
+    os.makedirs("tmp/" + str(n_nodes) + "/cvrp", exist_ok=True)
+
+    os.makedirs("tmp/" + str(n_nodes) + "/featgen_para", exist_ok=True) 
+    os.makedirs("tmp/" + str(n_nodes) + "/feat", exist_ok=True)
+    os.makedirs("tmp/" + str(n_nodes) + "/LKH_para", exist_ok=True) 
+    os.makedirs("tmp/" + str(n_nodes) + "/LKH_log", exist_ok=True)
+    max_nodes = int(n_nodes * 1.15)
+    n_neighbours = 20
+    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(str(n_nodes), dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset)))
+    edge_index, n_nodes_extend = list(zip(*feats))
+    edge_index = np.concatenate(edge_index, 0)
+    demand = np.concatenate([demand, np.zeros([n_samples, max_nodes - n_nodes])], -1)
+    demand = demand / dataset[0]["CAPACITY"]
+    capacity = np.zeros([n_samples, max_nodes])
+    capacity[:, 0] = 1
+    capacity[:, n_nodes:] = 1
+    assert len(dataset[0]["DEPOT"] == 1)
+    x = np.concatenate([x] + [x[:, 0:1, :] for _ in range(max_nodes - n_nodes)], 1)
+    node_feat = np.concatenate([x, demand.reshape([n_samples, max_nodes, 1]), capacity.reshape([n_samples, max_nodes, 1])], -1)
+    dist = dist
+    edge_feat = dist[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype="int")
+    inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), edge_index, np.arange(max_nodes).reshape(1, -1, 1)] = np.arange(n_neighbours).reshape(1, 1, -1) + np.arange(max_nodes).reshape(1, -1, 1) * n_neighbours
+    inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(str(n_nodes), dataset[i], str(i), True, 10000) for i in range(len(dataset))]), total=len(dataset)))
+    label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
+    for i in range(n_samples):
+        result = results[i]
+        for _ in range(len(result) - 1):
+            n_from, n_to = result[_] - 1, result[_ + 1] - 1
+            label[i, n_from, n_to] = True
+            label[i, n_to, n_from] = True
+    label = label[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    feat = {"node_feat":node_feat,
+            "edge_feat":edge_feat,
+            "edge_index":edge_index,
+            "inverse_edge_index":inverse_edge_index,
+            "label":label}
+    with open(save_dir + "/" + str(n_nodes) + ".pkl", "wb") as f:
+        pickle.dump(feat, f)
+        
+if __name__ == "__main__":
+    # global variables
+    n_nodes = args.n_nodes
+    
+    pool = mp.Pool(args.num_cpus)
+
+    for city in args.citys:
+        print(f"generating data for {city}")
+        # pickup 数据有缺失，只使用 delivery
+        df = pd.read_csv(f"./LaDeArchive/delivery/delivery_{city}.csv")
+        for data_col in ["accept_time", "accept_gps_time", "delivery_time", "delivery_gps_time"]:
+            df[data_col] = pd.to_datetime("2023-" + df[data_col], format='%Y-%m-%d %H:%M:%S')
+        for region_id, rdf in df.groupby("region_id"):
+            # rdf: region DataFrame
+            rdf = rdf.reset_index()
+            map_name = f"{city}_{region_id}"
+            coords = rdf[["lat", "lng"]].to_numpy()
+            bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
+            if not has_map(map_name):
+                fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
+            graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=target_crs)
+            rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
+            print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
+            
+            # 目前采用按时间切分训练集和验证集，但是训练集和验证集中存在相同快递员，神经网络可以提前学到某些快递员的行为特征，实际上不应该如此。
+            # 后面也可以尝试按快递员切分训练集和验证集，以解决这个问题。
+            # 目前采样快递员配送任务时用的是可放回采样，某一个任务可能被采样多次。
+            rdf = rdf.sort_values("delivery_time")
+            split_index = int(len(rdf) * args.train_ratio)
+            train_rdf = rdf.iloc[:split_index]
+            val_rdf= rdf.iloc[split_index:]
+            
+            def process_rdf(rdf):
+                sub_routes = []
+                for courier_id, courier_rdf in rdf.groupby("courier_id"):
+                    # courier_rdf currently is sorted by delivery time.
+                    # 暂时没想到如何获取快递员每个trip运送的是哪些货物，就把每天当成一个trip
+                    for _, courier_day_rdf in courier_rdf.groupby(courier_rdf["delivery_time"].dt.date):
+                        sub_routes.append(courier_day_rdf)
+                # 目前仅支持点数固定的问题。实际问题中点数往往是不固定的。
+                print(f"region {city}-{region_id}: {len(sub_routes)} sub_routes.")
+                problems_meta = []
+                for problem_index in range(args.n_samples):
+                    problem_routes = []
+                    problem_size_so_far = 0
+                    selected_flag = np.zeros(len(sub_routes), dtype=int)
+                    while True:
+                        i = np.random.randint(0, len(sub_routes))
+                        if selected_flag[i] == 1:
+                            continue
+                        selected_flag[i] = 1
+                        
+                        if problem_size_so_far + len(sub_routes) > args.n_nodes:
+                            partial_tour_df = sub_routes[i].iloc[:args.n_nodes - problem_size_so_far]
+                        else:
+                            partial_tour_df = sub_routes[i]
+                        problem_routes.append(partial_tour_df)
+                        problem_size_so_far += len(partial_tour_df)
+                        
+                        if problem_size_so_far == args.n_nodes:
+                            break
+                    problems_meta.append(problem_routes)
+                
+                return list(tqdm.tqdm(map(gen_instance, zip(problems_meta, cycle([graph]), cycle([gdf_nodes])))))
+                
+            train_instance = process_rdf(train_rdf)
+            val_instance = process_rdf(val_rdf)
+            
+            generate_dataset(train_instance, n_nodes, "CVRP_train")
+            generate_dataset(val_instance, n_nodes, "CVRP_val")
