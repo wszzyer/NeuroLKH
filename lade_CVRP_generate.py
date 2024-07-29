@@ -50,7 +50,6 @@ parser.add_argument(
     "--citys",
     action="append",
     dest="citys",
-    default="yt",
     help="citys to generate data"
 )
 args = parser.parse_args()
@@ -68,7 +67,7 @@ def write_instance(instance, instance_name, instance_filename):
         f.write("EDGE_WEIGHT_FORMAT : FULL_MATRIX\n")
         f.write("CAPACITY : " + str(instance["CAPACITY"]) + "\n")
         f.write("EDGE_WEIGHT_SECTION\n")
-        mat_str = np.array2string(instance["WEIGHT"]).replace('[','').replace(']','').replace("\n ", "\n")
+        mat_str = np.array2string(instance["WEIGHT"], threshold=np.inf, max_line_width=np.inf).replace('[','').replace(']','').replace("\n ", "\n")
         f.write(mat_str + "\n")
         f.write("DEMAND_SECTION\n")
         
@@ -108,20 +107,23 @@ def generate_feat(dataset_name, instance, instance_name, max_nodes):
         check_call(["./LKH", para_filename], stdout=f)
     return read_feat(feat_filename, max_nodes)
 
-def calc_distmat(net, care_nodes):
-    distmat = np.full((len(care_nodes), len(care_nodes)), fill_value=-1, dtype=int)
+def calc_distmat(net, care_nodes, gdf_nodes):
+    coords = gdf_nodes.loc[care_nodes][["x", "y"]].values
+    distmat = np.abs(coords[:, None] - coords[None]).sum(-1)
+    
     for u_i, u in enumerate(care_nodes):
         distvec = nx.single_source_dijkstra_path_length(net, u)
-        distmat[u_i] = [distvec[v] for v in care_nodes]
-    mask = distmat != -1
-    distmat[~mask] = distmat[mask].mean()
+        for v_i, v in enumerate(care_nodes):
+            if v in distvec:
+                distmat[u_i][v_i] = distvec[v]
+    
     return distmat
 
 def gen_instance(args):
     problem_routes, graph, gdf_nodes = args
     instance = {}
     
-    instance["CAPACITY"] = n_nodes // len(problem_routes) + 10
+    instance["CAPACITY"] = min(n_nodes // len(problem_routes) + 10, n_nodes)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
@@ -136,7 +138,7 @@ def gen_instance(args):
     corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
     
     instance["COORD"] = graph_coords[corresponding_graph_index]
-    distmat = calc_distmat(graph, corresponding_graph_node)
+    distmat = calc_distmat(graph, corresponding_graph_node, gdf_nodes)
     distmat = (distmat + distmat.T) / 2
     instance["WEIGHT"] = distmat.astype(int)
     # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
@@ -148,6 +150,7 @@ def gen_instance(args):
     return instance
 
 def generate_dataset(dataset, n_nodes, save_dir):
+    # n_nodes 包含仓库节点
     n_samples = len(dataset)
     x = np.stack([d["COORD"] for d in dataset])
     demand = np.stack([d["DEMAND"] for d in dataset])
@@ -260,7 +263,7 @@ if __name__ == "__main__":
                             break
                     problems_meta.append(problem_routes)
                 
-                return list(tqdm.tqdm(map(gen_instance, zip(problems_meta, cycle([graph]), cycle([gdf_nodes])))))
+                return list(tqdm.tqdm(pool.imap(gen_instance, zip(problems_meta, cycle([graph]), cycle([gdf_nodes])))))
                 
             train_instance = process_rdf(train_rdf)
             val_instance = process_rdf(val_rdf)
