@@ -282,7 +282,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     # construct edge features.
     # dummy_dist_mat is dist matrix with duplicated depot nodes.
-    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset)))
+    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
     edge_index, n_nodes_extend = list(zip(*feats))
     edge_index = np.concatenate(edge_index, 0)
     dist = np.stack([d["WEIGHT"] for d in dataset])
@@ -296,7 +296,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     # construct edge label.
-    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))]), total=len(dataset)))
+    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
         result = np.array(results[i]) - 1
@@ -381,7 +381,7 @@ if __name__ == "__main__":
                     "CVRPTW": gen_CVRPTW_instance,
                     "PDP": None
                 }[args.problem]
-                return list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta, cycle([graph]), cycle([gdf_nodes])))))
+                return list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta, cycle([graph]), cycle([gdf_nodes]))), desc='Generating Instance'))
                 
             train_instance = process_rdf(train_rdf)
             val_instance = process_rdf(val_rdf)
