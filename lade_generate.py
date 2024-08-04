@@ -309,9 +309,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
             "edge_index":edge_index,
             "inverse_edge_index":inverse_edge_index,
             "label":label}
-    
-    import ipdb;ipdb.set_trace();
-    
+        
     with open("data/" + dataset_name + ".pkl", "wb") as f:
         pickle.dump(feat, f)
         
