@@ -324,7 +324,7 @@ if __name__ == "__main__":
         df = pd.read_csv(f"./LaDeArchive/delivery/delivery_{city}.csv")
         for data_col in ["accept_time", "accept_gps_time", "delivery_time", "delivery_gps_time"]:
             df[data_col] = pd.to_datetime("2023-" + df[data_col], format='%Y-%m-%d %H:%M:%S')
-        for region_id, rdf in islice(sorted(df.groupby("region_id"), key=lambda g: -len(g[1])), args.n_nodes):
+        for region_id, rdf in islice(sorted(df.groupby("region_id"), key=lambda g: -len(g[1])), args.n_regions):
             # rdf: region DataFrame
             rdf = rdf.reset_index()
             map_name = f"{city}_{region_id}"
