@@ -15,7 +15,9 @@ import networkx as nx
 import numpy as np
 
 from fetch_data import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs
+from lade_utils import smooth_matrix
 
+max_extra_nodes_ratio = 1.15
 fetch_lade()
 np.random.seed(114514)
 source_crs = "EPSG:4326"
@@ -185,11 +187,11 @@ def gen_TSP_instance(args):
     return instance
 
 def gen_CVRP_instance(args):
-    problem_routes, graph, gdf_nodes = args
+    (problem_routes, whole_od), graph, gdf_nodes = args
     instance = {}
     
     instance["TYPE"] = "CVRP"
-    instance["CAPACITY"] = min(n_nodes // len(problem_routes) + 10, n_nodes)
+    instance["CAPACITY"] = min(max(n_nodes // len(problem_routes) + 10, n_nodes // (n_nodes * max_extra_nodes_ratio - n_nodes + 1)), n_nodes)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
@@ -212,6 +214,8 @@ def gen_CVRP_instance(args):
     instance["DEPOT"] = 1
     instance["DEMAND"] = np.ones(n_nodes, dtype=int)
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
+    
+    instance["OD"] = whole_od[corresponding_graph_index][:, corresponding_graph_index]
     
     return instance
 
@@ -251,7 +255,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     # configs.
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = int(n_nodes * 1.15)
+    max_nodes = int(n_nodes * max_extra_nodes_ratio)
     n_neighbours = 20
     
     # temperory directories.
@@ -285,15 +289,24 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
     edge_index, n_nodes_extend = list(zip(*feats))
     edge_index = np.concatenate(edge_index, 0)
+    # distance feature
     dist = np.stack([d["WEIGHT"] for d in dataset])
-    dummy_dist_mat = np.zeros((dist.shape[0] , max_nodes, max_nodes), dtype=int)
+    dummy_dist_mat = np.zeros((dist.shape[0], max_nodes, max_nodes), dtype=int)
     dummy_dist_mat[:, :dist.shape[1], :dist.shape[1]] = dist
     dummy_dist_mat[:, dist.shape[1]:, :] = dummy_dist_mat[:, :1, :]
-    dummy_dist_mat[:, :, dist.shape[1]:] = dummy_dist_mat[:, :, :1]    
-    edge_feat = dummy_dist_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    dummy_dist_mat[:, :, dist.shape[1]:] = dummy_dist_mat[:, :, :1]
+    dist_edge_feat = dummy_dist_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    # od feature
+    od = np.stack([d["OD"] for d in dataset])
+    dummy_od_mat = np.zeros((od.shape[0], max_nodes, max_nodes), dtype=int)
+    dummy_od_mat[:, :od.shape[1], :od.shape[1]] = od
+    dummy_od_mat[:, od.shape[1]:, :] = dummy_od_mat[:, :1, :]
+    dummy_od_mat[:, :, od.shape[1]:] = dummy_od_mat[:, :, :1]
+    od_edge_feat = dummy_od_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype="int")
     inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), edge_index, np.arange(max_nodes).reshape(1, -1, 1)] = np.arange(n_neighbours).reshape(1, 1, -1) + np.arange(max_nodes).reshape(1, -1, 1) * n_neighbours
     inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    edge_feat = np.concatenate((dist_edge_feat[..., None], od_edge_feat[..., None]), -1)
     
     # construct edge label.
     results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
@@ -353,6 +366,23 @@ if __name__ == "__main__":
                         sub_routes.append(courier_day_rdf)
                 # 目前仅支持点数固定的问题。实际问题中点数往往是不固定的。
                 print(f"region {city}-{region_id}: {len(sub_routes)} sub_routes.")
+                
+                # generate global statistics/features
+                # generate OD matrix
+                od = np.zeros((len(graph), len(graph)), dtype = int)
+                graph_coords = gdf_nodes[["y", "x"]].values
+                for route in sub_routes:
+                    route_coords = route[["lat", "lng"]].values
+                    route_coords = transform_crs(route_coords, source_crs, target_crs)
+                    package_to_node_dist = np.linalg.norm(route_coords[:, None] - graph_coords[None], axis=-1)
+                    corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
+                    od[corresponding_graph_index[:-1], corresponding_graph_index[1:]] += 1
+                # smooth OD matrix by aggregate neighbours's data.
+                id_to_index = {id: index for index, id in enumerate(gdf_nodes.index)}
+                adjs = [[id_to_index[v_id] for v_id in graph.neighbors(u_id)] for u_id in gdf_nodes.index] # each node's neighboures.
+                od_smoothed = smooth_matrix(adjs, od)
+                
+                # generate instance                
                 problems_meta = []
                 for problem_index in range(args.n_samples):
                     problem_routes = []
@@ -373,7 +403,7 @@ if __name__ == "__main__":
                         
                         if problem_size_so_far == args.n_nodes:
                             break
-                    problems_meta.append(problem_routes)
+                    problems_meta.append((problem_routes, od_smoothed))
                 
                 generate_function = {
                     "TSP": gen_TSP_instance,
