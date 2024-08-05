@@ -1,5 +1,6 @@
 import pickle
 import numpy as np
+import math
 
 class DataLoader(object):
     def __init__(self, file_path, batch_size, problem="tsp"):
@@ -46,7 +47,7 @@ class DataLoader(object):
             batch_size = dataset["node_feat"].shape[0] // 30
         elif self.problem == "pdp" or self.problem == "cvrptw":
             batch_size = dataset["node_feat"].shape[0] // 60
-        batch_index_inside_dataset = self.batch_index // self.n_ranges
+        batch_index_inside_dataset = (self.batch_index // self.n_ranges) % math.ceil(dataset["node_feat"].shape[0] / batch_size)
         node_feat = dataset["node_feat"][batch_index_inside_dataset * batch_size : (batch_index_inside_dataset + 1) * batch_size] # b x 100 x 2
         edge_feat = dataset["edge_feat"][batch_index_inside_dataset * batch_size : (batch_index_inside_dataset + 1) * batch_size] # b x 1,0000 x 2
         edge_index = dataset["edge_index"][batch_index_inside_dataset * batch_size : (batch_index_inside_dataset + 1) * batch_size] # b x 100 x 10

@@ -1,5 +1,6 @@
 torch
 pandas
+scikit-learn
 geopandas
 shapely
 huggingface_hub

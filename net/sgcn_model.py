@@ -10,7 +10,7 @@ def loss_edges(y_pred_edges, y_edges, edge_cw):
     return loss_edges
 
 class SparseGCNModel(nn.Module):
-    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp"):
+    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp", edge_dim=1):
         super(SparseGCNModel, self).__init__()
         if problem == "tsp":
             self.node_dim = 2 # x, y
@@ -22,7 +22,7 @@ class SparseGCNModel(nn.Module):
             self.node_dim = 6 # x, y, demand, start_time, end_time, capacity
         else:
             assert False
-        self.edge_dim = 1
+        self.edge_dim = edge_dim
         self.hidden_dim = hidden_dim
         self.n_gcn_layers = n_gcn_layers
         self.n_mlp_layers = n_mlp_layers
@@ -50,12 +50,11 @@ class SparseGCNModel(nn.Module):
         for layer in range(self.n_gcn_layers):
             x, e = self.gcn_layers[layer](x, e, edge_index, inverse_edge_index, n_edges)
         y_pred_edges = self.mlp_edges(e).view(batch_size, num_nodes, n_edges)
-        y_pred_edges = torch.exp(y_pred_edges)
-        y_pred_edges = y_pred_edges / (y_pred_edges.sum(2).view(batch_size, num_nodes, 1) + 1e-5)
+        y_pred_edges = torch.nn.functional.softmax(y_pred_edges, dim=-1)
         
         y_pred_edges = y_pred_edges.view(batch_size, num_nodes * n_edges, 1)
         y_pred_edges = torch.cat([1 - y_pred_edges, y_pred_edges], dim = 2)
-        y_pred_edges = torch.log(y_pred_edges)
+        y_pred_edges = torch.log(y_pred_edges + 1e-5)
         if y_edges != None:
             loss = loss_edges(y_pred_edges, y_edges, edge_cw)
             loss = loss.view(batch_size, num_nodes, n_edges)[loss_mask]

@@ -59,6 +59,7 @@ parser.add_argument(
     "--citys",
     action="append",
     dest="citys",
+    default=["yt"],
     help="citys to generate data"
 )
 parser.add_argument(
@@ -357,7 +358,7 @@ if __name__ == "__main__":
             train_rdf = rdf.iloc[:split_index]
             val_rdf= rdf.iloc[split_index:]
             
-            def process_rdf(rdf):
+            def process_rdf(rdf, n_samples):
                 sub_routes = []
                 for courier_id, courier_rdf in rdf.groupby("courier_id"):
                     # courier_rdf currently is sorted by delivery time.
@@ -384,7 +385,7 @@ if __name__ == "__main__":
                 
                 # generate instance                
                 problems_meta = []
-                for problem_index in range(args.n_samples):
+                for problem_index in range(n_samples):
                     problem_routes = []
                     problem_size_so_far = 0
                     selected_flag = np.zeros(len(sub_routes), dtype=int)
@@ -413,8 +414,8 @@ if __name__ == "__main__":
                 }[args.problem]
                 return list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta, cycle([graph]), cycle([gdf_nodes]))), desc='Generating Instance'))
                 
-            train_instance = process_rdf(train_rdf)
-            val_instance = process_rdf(val_rdf)
+            train_instance = process_rdf(train_rdf, args.n_samples)
+            val_instance = process_rdf(val_rdf, 32)
             
             generate_dataset(train_instance, n_nodes, f"{args.problem}_train_{city}_{region_id}_{n_nodes}")
             generate_dataset(val_instance, n_nodes, f"{args.problem}_val_{city}_{region_id}_{n_nodes}")
