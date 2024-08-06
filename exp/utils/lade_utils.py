@@ -12,7 +12,7 @@ from huggingface_hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
-maps_dir = os.path.join("./LaDe/road-network/")
+maps_dir = os.path.join("./data/LaDe/road-network/")
 os.makedirs(maps_dir, exist_ok=True)
 name_abbr = {
     "上海市": "sh",
@@ -21,6 +21,8 @@ name_abbr = {
     "吉林市": "jl",
     "烟台市": "yt"
 }
+SOURCE_CRS = "EPSG:4326"
+TARGET_CRS = "EPSG:32650"
 
 def save_to_shapefile(nw_multi: nx.MultiDiGraph, map_dir_path):
     # convert undirected graph to gdfs and stringify non-numeric columns
@@ -112,6 +114,6 @@ def decode_gps_traj(traj: pd.DataFrame, lng = "lng", lat = "lat") -> None:
     traj[lng] = traj_unbiased[:, 1]
 
 def fetch_lade():
-    if not os.path.exists("./LaDeArchive"):
-        snapshot_download(repo_id="Cainiao-AI/LaDe", repo_type="dataset", local_dir = "./LaDeArchive", revision="be2cec02775cafc8d52230303f32134382bcc50b")
+    if not os.path.exists("./data/LaDeArchive"):
+        snapshot_download(repo_id="Cainiao-AI/LaDe", repo_type="dataset", local_dir = "./data/LaDeArchive", revision="be2cec02775cafc8d52230303f32134382bcc50b")
     

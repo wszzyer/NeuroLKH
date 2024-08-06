@@ -10,18 +10,15 @@ import pickle
 import functools
 
 import pandas as pd
-import geopandas as gpd
-import networkx as nx
 import numpy as np
 
-from fetch_data import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs
-from lade_utils import smooth_matrix
+from feats import get_all_feats
+from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
+from utils.lkh_utils import read_feat, read_results, write_instance, write_para
 
 max_extra_nodes_ratio = 1.15
 fetch_lade()
 np.random.seed(114514)
-source_crs = "EPSG:4326"
-target_crs = "EPSG:32650"
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -83,59 +80,11 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-def write_instance(instance, instance_name, instance_filename):
-    """
-    """
-    with open(instance_filename, "w") as f:
-        f.write("NAME : " + instance_name + "\n")
-        f.write("COMMENT : blank\n")
-        f.write("TYPE : " + instance["TYPE"] + "\n")
-        f.write("DIMENSION : " + str(len(instance["COORD"])) + "\n")
-        f.write("EDGE_WEIGHT_TYPE : EXPLICIT\n")
-        f.write("EDGE_WEIGHT_FORMAT : FULL_MATRIX\n")
-        if "CAPACITY" in instance:
-            f.write("CAPACITY : " + str(instance["CAPACITY"]) + "\n")
-        if "SERVICE_TIME" in instance:
-            f.write("SERVICE_TIME : " + str(instance["SERVICE_TIME"]) + "\n" )
-        f.write("EDGE_WEIGHT_SECTION\n")
-        for line in instance["WEIGHT"]:
-            f.write(" ".join(map(str, line)) + "\n")
-        if "DEMAND" in instance:
-            f.write("DEMAND_SECTION\n")
-            for i, demand in enumerate(instance["DEMAND"]):
-                f.write(f"{i+1} {demand}\n")
-        if "DEPOT" in instance:
-            f.write("DEPOT_SECTION\n " + str(instance["DEPOT"]) + "\n -1\n")
-        if "TIME_WINDOW_SECTION" in instance:
-            f.write("TIME_WINDOW_SECTION\n")
-            for i, tw_begin, tw_end in range(n_nodes):
-                f.write(f"{i+1} {tw_begin} {tw_end}")
-        f.write("EOF\n")
-
-def write_para(feat_filename, instance_filename, method, para_filename, max_trials=1000, seed=1234):
-    with open(para_filename, "w") as f:
-        f.write("PROBLEM_FILE = " + instance_filename + "\n")
-        f.write("PRECISION = 1\n")
-        f.write("MAX_TRIALS = " + str(max_trials) + "\n")
-        f.write("SPECIAL\nRUNS = 1\n")
-        f.write("SEED = " + str(seed) + "\n")
-        if method == "FeatGenerate":
-            # f.write("GerenatingFeature\n")
-            if os.path.exists(feat_filename):
-                os.remove(feat_filename)
-            f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-            f.write("CANDIDATE_SET_TYPE = NEAREST-NEIGHBOR\n")
-            f.write("MAX_CANDIDATES = 20\n")
-        else:
-            assert method == "LKH"
-            
 def map_wrapper(func):
     @functools.wraps(func)
     def expand_args_for_func(args):
         return func(*args)
     return expand_args_for_func
-
-from CVRPdata_generate import read_feat, read_results
 
 @map_wrapper
 def solve_LKH(instance_dir, LKH_param_dir, LKH_log_dir, instance, instance_name, rerun=False, max_trials=1000):
@@ -143,7 +92,7 @@ def solve_LKH(instance_dir, LKH_param_dir, LKH_log_dir, instance, instance_name,
     log_filename = os.path.join(LKH_log_dir, instance_name + ".log")
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
     if rerun or not os.path.isfile(log_filename):
-        write_instance(instance, instance_name, instance_filename)
+        write_instance(instance, instance_name, instance_filename, n_nodes)
         write_para(None, instance_filename, "LKH", para_filename, max_trials=max_trials)
         with open(log_filename, "w") as f:
             check_call(["./LKH", para_filename], stdout=f)
@@ -154,27 +103,14 @@ def generate_feat(instance_dir, feat_param_dir, feat_dir, instance, instance_nam
     para_filename = os.path.join(feat_param_dir, instance_name + ".para")
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
     feat_filename = os.path.join(feat_dir, instance_name + ".txt")
-    write_instance(instance, instance_name, instance_filename)
+    write_instance(instance, instance_name, instance_filename, n_nodes)
     write_para(feat_filename, instance_filename, "FeatGenerate", para_filename)
     with tempfile.TemporaryFile() as f:
         check_call(["./LKH", para_filename], stdout=f)
     return read_feat(feat_filename, max_nodes)
 
-def calc_distmat(net, care_nodes, gdf_nodes):
-    coords = gdf_nodes.loc[care_nodes][["x", "y"]].values
-    # 图可能不连通，这里使用曼哈顿距离做默认值。
-    distmat = np.abs(coords[:, None] - coords[None]).sum(-1)
-    
-    for u_i, u in enumerate(care_nodes):
-        distvec = nx.single_source_dijkstra_path_length(net, u)
-        for v_i, v in enumerate(care_nodes):
-            if v in distvec:
-                distmat[u_i][v_i] = distvec[v]
-    
-    return distmat
-
-def gen_TSP_instance(args):
-    problem_routes, graph, gdf_nodes = args
+def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
+    problem_routes, scatter_goods = problem_meta
     instance = {}
     
     instance["TYPE"] = "TSP"
@@ -186,22 +122,22 @@ def gen_TSP_instance(args):
         # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
         package_coords.append(df[["lat", "lng"]].values)
     package_coords = np.vstack(package_coords)
-    package_coords = transform_crs(package_coords, source_crs, target_crs)
+    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
     package_to_node_dist = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1)
     corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
-    corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
     print(f"average distance from package to node {package_to_node_dist.min(axis=-1).mean()}")
     
     instance["COORD"] = graph_coords[corresponding_graph_index]
-    distmat = calc_distmat(graph, corresponding_graph_node, gdf_nodes)
-    distmat = (distmat + distmat.T) / 2
-    instance["WEIGHT"] = distmat.astype(int)
+
+    additional_instance_feats = {}
+    for feat_class, problem_meta in additional_feats.items():
+        additional_instance_feats[feat_class] = feat_class.generate_tsp_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
+    instance["ATTACHMENT"] = additional_instance_feats
     
     return instance
 
-def gen_CVRP_instance(args):
-    global graph, gdf_nodes, whole_od
-    (problem_routes, scatter_goods), = args
+def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
+    problem_routes, scatter_goods = problem_meta
     instance = {}
     
     instance["TYPE"] = "CVRP"
@@ -219,28 +155,25 @@ def gen_CVRP_instance(args):
     else:
         assert sample_type == "scatter"
         package_coords = scatter_goods[["lat", "lng"]].values
-        
-    package_coords = transform_crs(package_coords, source_crs, target_crs)
+    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
     corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
-    corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
     
     instance["COORD"] = graph_coords[corresponding_graph_index]
-    distmat = calc_distmat(graph, corresponding_graph_node, gdf_nodes)
-    distmat = (distmat + distmat.T) / 2
-    instance["WEIGHT"] = distmat.astype(int)
     # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
     # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
     instance["DEPOT"] = 1
     instance["DEMAND"] = np.ones(n_nodes, dtype=int)
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
-    
-    instance["OD"] = whole_od[corresponding_graph_index][:, corresponding_graph_index]
+
+    additional_instance_feats = {}
+    for feat_class, problem_meta in additional_feats.items():
+        additional_instance_feats[feat_class] = feat_class.generate_cvrp_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
+    instance["ATTACHMENT"] = additional_instance_feats
     
     return instance
 
-
-def gen_CVRPTW_instance(args):
-    problem_routes, graph, gdf_nodes = args
+def gen_CVRPTW_instance(graph, gdf_nodes, additional_feats, problem_meta):
+    problem_routes, scatter_goods = problem_meta
     instance = {}
     
     instance["TYPE"] = "CVRP"
@@ -254,14 +187,16 @@ def gen_CVRPTW_instance(args):
         # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
         package_coords.append(df[["lat", "lng"]].values)
     package_coords = np.vstack(package_coords)
-    package_coords = transform_crs(package_coords, source_crs, target_crs)
+    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
     corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
-    corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
     
     instance["COORD"] = graph_coords[corresponding_graph_index]
-    distmat = calc_distmat(graph, corresponding_graph_node, gdf_nodes)
-    distmat = (distmat + distmat.T) / 2
-    instance["WEIGHT"] = distmat.astype(int)
+
+    additional_instance_feats = {}
+    for feat_class, problem_meta in additional_feats.items():
+        additional_instance_feats[feat_class] = feat_class.generate_cvrptw_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
+    instance["ATTACHMENT"] = additional_instance_feats
+
     # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
     # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
     instance["DEPOT"] = 1
@@ -284,7 +219,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     LKH_param_dir = "tmp/" + dataset_name + "/LKH_para"
     LKH_log_dir = "tmp/" + dataset_name + "/LKH_log"
     
-    os.makedirs("data/", exist_ok=True)
+    os.makedirs("data/generated/", exist_ok=True)
     os.makedirs(instance_dir, exist_ok=True)
     os.makedirs(feat_param_dir, exist_ok=True) 
     os.makedirs(feat_dir, exist_ok=True)
@@ -304,33 +239,30 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     node_feat = np.concatenate([x, demand[:, :, None], capacity[:, :, None]], -1)
     
     # construct edge features.
-    # dummy_dist_mat is dist matrix with duplicated depot nodes.
-    with mp.Pool(args.num_cpus) as pool:
-        feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
+    # dummy_mat is matrix with duplicated depot nodes.
+    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
     edge_index, n_nodes_extend = list(zip(*feats))
     edge_index = np.concatenate(edge_index, 0)
-    # distance feature
-    dist = np.stack([d["WEIGHT"] for d in dataset])
-    dummy_dist_mat = np.zeros((dist.shape[0], max_nodes, max_nodes), dtype=int)
-    dummy_dist_mat[:, :dist.shape[1], :dist.shape[1]] = dist
-    dummy_dist_mat[:, dist.shape[1]:, :] = dummy_dist_mat[:, :1, :]
-    dummy_dist_mat[:, :, dist.shape[1]:] = dummy_dist_mat[:, :, :1]
-    dist_edge_feat = dummy_dist_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
-    # od feature
-    od = np.stack([d["OD"] for d in dataset])
-    dummy_od_mat = np.zeros((od.shape[0], max_nodes, max_nodes), dtype=int)
-    dummy_od_mat[:, :od.shape[1], :od.shape[1]] = od
-    dummy_od_mat[:, od.shape[1]:, :] = dummy_od_mat[:, :1, :]
-    dummy_od_mat[:, :, od.shape[1]:] = dummy_od_mat[:, :, :1]
-    od_edge_feat = dummy_od_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+
+    edge_feat_list = []
+    feat_item = dataset[0]["ATTACHMENT"]
+    for feat_class in feat_item.keys():
+        if feat_class.feat_type != "edge":
+            continue
+        feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
+        dummy_mat = np.zeros((feat.shape[0], max_nodes, max_nodes), dtype=int)
+        dummy_mat[:, :feat.shape[1], :feat.shape[1]] = feat
+        dummy_mat[:, feat.shape[1]:, :] = dummy_mat[:, :1, :]
+        dummy_mat[:, :, feat.shape[1]:] = dummy_mat[:, :, :1]
+        edge_feat_list.append(dummy_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index][..., None])
+    edge_feat = np.concatenate(edge_feat_list, -1)
+
     inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype="int")
     inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), edge_index, np.arange(max_nodes).reshape(1, -1, 1)] = np.arange(n_neighbours).reshape(1, 1, -1) + np.arange(max_nodes).reshape(1, -1, 1) * n_neighbours
     inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
-    edge_feat = np.concatenate((dist_edge_feat[..., None], od_edge_feat[..., None]), -1)
     
     # construct edge label.
-    with mp.Pool(args.num_cpus) as pool:
-        results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
+    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
         result = np.array(results[i]) - 1
@@ -344,7 +276,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
             "inverse_edge_index":inverse_edge_index,
             "label":label}
         
-    with open("data/" + dataset_name + ".pkl", "wb") as f:
+    with open("data/generated/" + dataset_name + ".pkl", "wb") as f:
         pickle.dump(feat, f)
         
 if __name__ == "__main__":
@@ -352,9 +284,12 @@ if __name__ == "__main__":
     n_nodes = args.n_nodes
     sample_type = args.sample_type
     
+    pool = mp.Pool(args.num_cpus)
+    feats = get_all_feats()
+
     for city in args.citys:
         # pickup 数据有缺失，只使用 delivery
-        df = pd.read_csv(f"./LaDeArchive/delivery/delivery_{city}.csv")
+        df = pd.read_csv(f"./data/LaDeArchive/delivery/delivery_{city}.csv")
         for data_col in ["accept_time", "accept_gps_time", "delivery_time", "delivery_gps_time"]:
             df[data_col] = pd.to_datetime("2023-" + df[data_col], format='%Y-%m-%d %H:%M:%S')
         for region_id, rdf in islice(sorted(df.groupby("region_id"), key=lambda g: -len(g[1])), args.n_regions):
@@ -365,8 +300,7 @@ if __name__ == "__main__":
             bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
-            global graph, gdf_nodes # use global variables to avoid process commucation.
-            graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=target_crs)
+            graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
             rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
             print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
             
@@ -377,6 +311,11 @@ if __name__ == "__main__":
             split_index = int(len(rdf) * args.train_ratio)
             train_rdf = rdf.iloc[:split_index]
             val_rdf= rdf.iloc[split_index:]
+
+            # generate additional features
+            additional_meta = {}
+            for feat in feats:
+                additional_meta[feat] = feat.generate_problem_meta(rdf, graph, gdf_nodes)
             
             # generate global statistics/features
             # generate OD matrix
@@ -404,8 +343,9 @@ if __name__ == "__main__":
                         sub_routes.append(courier_day_rdf)
                 # 目前仅支持点数固定的问题。实际问题中点数往往是不固定的。
                 print(f"region {city}-{region_id}: {len(sub_routes)} sub_routes.")
-                
-                # generate instance                
+
+
+                # generate common part of instances
                 problems_meta = []
                 for problem_index in range(n_samples):
                     # generate instance using sub routes.
@@ -427,24 +367,24 @@ if __name__ == "__main__":
                         
                         if problem_size_so_far == args.n_nodes:
                             break
-                    
+                        
                     # generate instance using scatter goods
                     scatter_goods = rdf.loc[np.random.choice(rdf.index, size = n_nodes, replace=False)]
-                    
                     problems_meta.append((problem_routes, scatter_goods))
                 
+                # generate spcific part of instances 
                 generate_function = {
                     "TSP": gen_TSP_instance,
                     "CVRP": gen_CVRP_instance,
                     "CVRPTW": gen_CVRPTW_instance,
                     "PDP": None
                 }[args.problem]
-                with mp.Pool(args.num_cpus) as pool:
-                    instances = list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta)), desc='Generating Instance', total=len(problems_meta)))
-                return instances
-            
+                return list(tqdm.tqdm(pool.imap(functools.partial(generate_function, graph, gdf_nodes, additional_meta), problems_meta,
+                                                 chunksize=min(32, n_samples // 8)), desc='Generating Instance', total=n_samples))
+                
             train_instance = process_rdf(train_rdf, args.n_samples)
             val_instance = process_rdf(val_rdf, 32)
             
             generate_dataset(train_instance, n_nodes, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")
             generate_dataset(val_instance, n_nodes, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")
+    
