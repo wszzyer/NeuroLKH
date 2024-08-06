@@ -1,7 +1,5 @@
-/LaDe
-/LaDeArchive
-/tmp/
-/__pycache__/
-/cache/
-/data
-/LKH
+/exp/tmp/
+__pycache__/
+cache/
+/exp/data
+LKH
