@@ -45,7 +45,7 @@ parser.add_argument(
 parser.add_argument(
     "--train-ratio",
     type=float,
-    default=0.9,
+    default=0.8,
     help="train dataset ratio"
 )
 parser.add_argument(
@@ -59,7 +59,6 @@ parser.add_argument(
     "--citys",
     action="append",
     dest="citys",
-    default=["yt"],
     help="citys to generate data"
 )
 parser.add_argument(
@@ -67,6 +66,19 @@ parser.add_argument(
     type=int,
     default=1,
     help="only generate datasets for largest `--n-regions`"
+)
+parser.add_argument(
+    "--sample-type",
+    type=str,
+    default="scatter",
+    choices=["scatter",  "subroute"],
+    help="scatter: sample directly from all tasks. "
+)
+parser.add_argument(
+    "--postfix",
+    type=str,
+    default="",
+    help="dataset postfix"
 )
 args = parser.parse_args()
 
@@ -188,7 +200,8 @@ def gen_TSP_instance(args):
     return instance
 
 def gen_CVRP_instance(args):
-    (problem_routes, whole_od), graph, gdf_nodes = args
+    global graph, gdf_nodes, whole_od
+    (problem_routes, scatter_goods), = args
     instance = {}
     
     instance["TYPE"] = "CVRP"
@@ -196,12 +209,17 @@ def gen_CVRP_instance(args):
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
-    package_coords = []
-    for df in problem_routes:
-        # map package point to graph node.
-        # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
-        package_coords.append(df[["lat", "lng"]].values)
-    package_coords = np.vstack(package_coords)
+    if sample_type == "subroute":
+        package_coords = []
+        for df in problem_routes:
+            # map package point to graph node.
+            # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
+            package_coords.append(df[["lat", "lng"]].values)
+        package_coords = np.vstack(package_coords)
+    else:
+        assert sample_type == "scatter"
+        package_coords = scatter_goods[["lat", "lng"]].values
+        
     package_coords = transform_crs(package_coords, source_crs, target_crs)
     corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
     corresponding_graph_node = gdf_nodes.index[corresponding_graph_index]
@@ -287,7 +305,8 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     # construct edge features.
     # dummy_dist_mat is dist matrix with duplicated depot nodes.
-    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
+    with mp.Pool(args.num_cpus) as pool:
+        feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
     edge_index, n_nodes_extend = list(zip(*feats))
     edge_index = np.concatenate(edge_index, 0)
     # distance feature
@@ -310,7 +329,8 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     edge_feat = np.concatenate((dist_edge_feat[..., None], od_edge_feat[..., None]), -1)
     
     # construct edge label.
-    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
+    with mp.Pool(args.num_cpus) as pool:
+        results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
         result = np.array(results[i]) - 1
@@ -330,9 +350,8 @@ def generate_dataset(dataset, n_nodes, dataset_name):
 if __name__ == "__main__":
     # global variables
     n_nodes = args.n_nodes
+    sample_type = args.sample_type
     
-    pool = mp.Pool(args.num_cpus)
-
     for city in args.citys:
         # pickup 数据有缺失，只使用 delivery
         df = pd.read_csv(f"./LaDeArchive/delivery/delivery_{city}.csv")
@@ -346,6 +365,7 @@ if __name__ == "__main__":
             bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
+            global graph, gdf_nodes # use global variables to avoid process commucation.
             graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=target_crs)
             rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
             print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
@@ -358,6 +378,23 @@ if __name__ == "__main__":
             train_rdf = rdf.iloc[:split_index]
             val_rdf= rdf.iloc[split_index:]
             
+            # generate global statistics/features
+            # generate OD matrix
+            od = np.zeros((len(graph), len(graph)), dtype = int)
+            graph_coords = gdf_nodes[["y", "x"]].values
+            for courier_id, courier_rdf in rdf.groupby("courier_id"):
+                for _, courier_day_rdf in courier_rdf.groupby(courier_rdf["delivery_time"].dt.date):
+                    route_coords = courier_day_rdf[["lat", "lng"]].values
+                    route_coords = transform_crs(route_coords, source_crs, target_crs)
+                    package_to_node_dist = np.linalg.norm(route_coords[:, None] - graph_coords[None], axis=-1)
+                    corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
+                    od[corresponding_graph_index[:-1], corresponding_graph_index[1:]] += 1
+            # smooth OD matrix by aggregate neighbours's data.
+            id_to_index = {id: index for index, id in enumerate(gdf_nodes.index)}
+            adjs = [[id_to_index[v_id] for v_id in graph.neighbors(u_id)] for u_id in gdf_nodes.index] # each node's neighboures.
+            global whole_od
+            whole_od = smooth_matrix(adjs, od)
+                
             def process_rdf(rdf, n_samples):
                 sub_routes = []
                 for courier_id, courier_rdf in rdf.groupby("courier_id"):
@@ -368,24 +405,10 @@ if __name__ == "__main__":
                 # 目前仅支持点数固定的问题。实际问题中点数往往是不固定的。
                 print(f"region {city}-{region_id}: {len(sub_routes)} sub_routes.")
                 
-                # generate global statistics/features
-                # generate OD matrix
-                od = np.zeros((len(graph), len(graph)), dtype = int)
-                graph_coords = gdf_nodes[["y", "x"]].values
-                for route in sub_routes:
-                    route_coords = route[["lat", "lng"]].values
-                    route_coords = transform_crs(route_coords, source_crs, target_crs)
-                    package_to_node_dist = np.linalg.norm(route_coords[:, None] - graph_coords[None], axis=-1)
-                    corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
-                    od[corresponding_graph_index[:-1], corresponding_graph_index[1:]] += 1
-                # smooth OD matrix by aggregate neighbours's data.
-                id_to_index = {id: index for index, id in enumerate(gdf_nodes.index)}
-                adjs = [[id_to_index[v_id] for v_id in graph.neighbors(u_id)] for u_id in gdf_nodes.index] # each node's neighboures.
-                od_smoothed = smooth_matrix(adjs, od)
-                
                 # generate instance                
                 problems_meta = []
                 for problem_index in range(n_samples):
+                    # generate instance using sub routes.
                     problem_routes = []
                     problem_size_so_far = 0
                     selected_flag = np.zeros(len(sub_routes), dtype=int)
@@ -404,7 +427,11 @@ if __name__ == "__main__":
                         
                         if problem_size_so_far == args.n_nodes:
                             break
-                    problems_meta.append((problem_routes, od_smoothed))
+                    
+                    # generate instance using scatter goods
+                    scatter_goods = rdf.loc[np.random.choice(rdf.index, size = n_nodes, replace=False)]
+                    
+                    problems_meta.append((problem_routes, scatter_goods))
                 
                 generate_function = {
                     "TSP": gen_TSP_instance,
@@ -412,10 +439,12 @@ if __name__ == "__main__":
                     "CVRPTW": gen_CVRPTW_instance,
                     "PDP": None
                 }[args.problem]
-                return list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta, cycle([graph]), cycle([gdf_nodes]))), desc='Generating Instance'))
-                
+                with mp.Pool(args.num_cpus) as pool:
+                    instances = list(tqdm.tqdm(pool.imap(generate_function, zip(problems_meta)), desc='Generating Instance', total=len(problems_meta)))
+                return instances
+            
             train_instance = process_rdf(train_rdf, args.n_samples)
             val_instance = process_rdf(val_rdf, 32)
             
-            generate_dataset(train_instance, n_nodes, f"{args.problem}_train_{city}_{region_id}_{n_nodes}")
-            generate_dataset(val_instance, n_nodes, f"{args.problem}_val_{city}_{region_id}_{n_nodes}")
+            generate_dataset(train_instance, n_nodes, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")
+            generate_dataset(val_instance, n_nodes, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")

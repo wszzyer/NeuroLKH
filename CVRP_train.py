@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 from utils.data_loader import DataLoader
 import glob
-from tqdm import trange
+from tqdm import trange, tqdm
 from net.sgcn_model import SparseGCNModel
 from sklearn.utils.class_weight import compute_class_weight
 import torch
@@ -47,7 +47,8 @@ while epoch < args.n_epoch:
     net.train()
     dataset_index = epoch % 10
     dataLoader.load_data(dataset_index)
-    for batch in trange(30 * 40):
+    pbar = tqdm(range(30 * 40))
+    for batch in pbar:
         node_feat, edge_feat, label, edge_index, inverse_edge_index = dataLoader.next_batch()
         batch_size = node_feat.shape[0]
         node_feat = Variable(torch.FloatTensor(node_feat).type(torch.cuda.FloatTensor), requires_grad=False) # B x N x 2
@@ -74,6 +75,7 @@ while epoch < args.n_epoch:
         rank_batch = np.zeros((batch_size * n_nodes, n_edges))
         rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, n_edges))] = np.tile(np.arange(n_edges), (batch_size * n_nodes, 1))
         rank_train[(batch % 40) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+        pbar.set_postfix({"train_loss": loss_edges.item()})
     print ("Epoch {} loss {:.7f} rank:".format(epoch, np.mean(statistics["loss_train"])), ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(20)]))
 
     if epoch % args.eval_interval == 0:

@@ -10,10 +10,10 @@ import torch
 from torch.autograd import Variable
 import pickle
 
-# torch.manual_seed(114514)
-# np.random.seed(114514)
+torch.manual_seed(114514)
+np.random.seed(114514)
 class LaDeDataLoader(DataLoader):
-    def __init__(self, file_path, batch_size, problem="tsp"):
+    def __init__(self, file_path, batch_size, problem="tsp", use_od = False):
         self.file_path = file_path
         self.batch_size = batch_size
         if problem == "pdp" or problem == "cvrptw":
@@ -21,10 +21,17 @@ class LaDeDataLoader(DataLoader):
         else:
             self.n_ranges = 1
         self.problem = problem
+        self.use_od = use_od
         
     def load_data(self, index):
         self.batch_index = 0
         if hasattr(self, "dataset"):
+            for dst in self.dataset:
+                permution = np.arange(dst["node_feat"].shape[0])
+                np.random.shuffle(permution)
+                for key in ["node_feat", "edge_feat", "edge_index", "inverse_edge_index", "label", "label1", "label2"]:
+                    if key in dst:
+                        dst[key] = dst[key][permution]
             return
         self.dataset = []
         with open(self.file_path, "rb") as f:
@@ -35,6 +42,8 @@ class LaDeDataLoader(DataLoader):
         batch = list(origin_batch)
         # standardization
         batch[0] = (batch[0] - [4.1662e+06, 8.7300e+05, 0., 0.]) / [2.5976e+03, 5.0038e+03, 1., 1.]
+        if not self.use_od:
+            batch[1] = batch[1][..., :1]
         return tuple(batch)
     
 parser = argparse.ArgumentParser(description='')
@@ -50,13 +59,15 @@ parser.add_argument('--learning_rate', type=float, default=0.00001, help='')
 parser.add_argument('--save_interval', type=int, default=5, help='')
 parser.add_argument('--save_dir', type=str, default="saved/exp1/", help='')
 parser.add_argument('--load_pt', type=str, default="", help='')
+parser.add_argument('--use_od', action="store_true")
 args = parser.parse_args()
 
+print(f"Using OD: {args.use_od}")
 n_edges = 20
-net = SparseGCNModel(problem="cvrp", edge_dim=2)
+net = SparseGCNModel(problem="cvrp", edge_dim=2 if args.use_od else 1)
 net.cuda()
 dataLoader = LaDeDataLoader(file_path=args.file_path,
-                        batch_size=None, problem="cvrp")
+                        batch_size=None, problem="cvrp", use_od = args.use_od)
 os.makedirs(args.save_dir, exist_ok=True)
 edge_cw = None
 optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
@@ -69,11 +80,13 @@ if args.load_pt:
     optimizer.load_state_dict(saved["optimizer"])
 while epoch < args.n_epoch:
     statistics = {"loss_train": [],
-                  "loss_test": []}
+                  "train_sample_count": 0,
+                  "loss_val": [],
+                  "val_sample_count": 0}
     rank_train = [[] for _ in range(20)]
     net.train()
     dataLoader.load_data(None)
-    pbar = tqdm(range(30)) # 作者写的 DataLoader 对 CVRP 就是只有 30 个batch，不满一个整个 batch 的部分丢弃。
+    pbar = trange(30) # 作者写的 DataLoader 对 CVRP 就是只有 30 个batch，不满一个整个 batch 的部分丢弃。
     for batch in pbar:
         node_feat, edge_feat, label, edge_index, inverse_edge_index = dataLoader.next_batch()
         batch_size = node_feat.shape[0]
@@ -92,7 +105,8 @@ while epoch < args.n_epoch:
         n_nodes = node_feat.size(1)
         loss = loss_edges
         loss.backward()
-        statistics["loss_train"].append(loss.detach().cpu().numpy())
+        statistics["loss_train"].append(loss.detach().cpu().numpy() * batch_size)
+        statistics["train_sample_count"] += batch_size
         optimizer.step()
         optimizer.zero_grad()
         y_edges = y_edges.detach().cpu().numpy()
@@ -103,16 +117,17 @@ while epoch < args.n_epoch:
         rank_train[(batch % 40) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
         
         pbar.set_postfix({"train_loss": loss_edges.item()})
-    print ("Epoch {} loss {:.7f} rank:".format(epoch, np.mean(statistics["loss_train"])), ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(20)]))
+    print ("Epoch {} loss {:.7f} rank:".format(epoch, np.sum(statistics["loss_train"])/statistics["train_sample_count"]), ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(20)]))
 
     if epoch % args.eval_interval == 0:
+        net.eval()
         eval_results = []
         dataset = pickle.load(open(args.eval_file_path, "rb"))
         dataset_rank = []
         dataset_norms = []
         for eval_batch in trange(dataset["node_feat"].shape[0] // args.eval_batch_size):
             node_feat = dataset["node_feat"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size]
-            edge_feat = dataset["edge_feat"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size]
+            edge_feat = dataset["edge_feat"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size][..., :2 if args.use_od else 1]
             edge_index = dataset["edge_index"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size]
             inverse_edge_index = dataset["inverse_edge_index"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size]
             label = dataset["label"][eval_batch * args.eval_batch_size:(eval_batch + 1) * args.eval_batch_size]
@@ -132,8 +147,11 @@ while epoch < args.n_epoch:
                 rank_batch = np.zeros((args.eval_batch_size * n_nodes, n_edges))
                 rank_batch[np.arange(args.eval_batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, n_edges))] = np.tile(np.arange(n_edges), (args.eval_batch_size * n_nodes, 1))
                 dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+                
+                statistics["loss_val"].append(loss_edges.detach().cpu().numpy() * batch_size)
+                statistics["val_sample_count"] += batch_size
         eval_results.append(np.mean(dataset_rank) + 1)
-        print (f"{args.eval_file_path} {eval_results[0]:.3f}")
+        print (f"{args.eval_file_path} loss {np.sum(statistics['loss_val'])/statistics['val_sample_count']:.7f}")
 
     epoch += 1
     if epoch % args.save_interval == 0:
