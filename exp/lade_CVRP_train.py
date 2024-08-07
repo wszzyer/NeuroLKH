@@ -44,7 +44,8 @@ class LaDeDataLoader(DataLoader):
         batch = list(origin_batch)
         # standardization
         batch[0] = (batch[0] - [4.1662e+06, 8.7300e+05, 0., 0.]) / [2.5976e+03, 5.0038e+03, 1., 1.]
-        batch[1] = batch[1][self.index_map]
+        print(batch[1].shape, self.index_map)
+        batch[1] = batch[1][..., self.index_map]
         return tuple(batch)
     
 parser = argparse.ArgumentParser(description='')
