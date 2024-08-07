@@ -92,7 +92,7 @@ def solve_LKH(instance_dir, LKH_param_dir, LKH_log_dir, instance, instance_name,
     log_filename = os.path.join(LKH_log_dir, instance_name + ".log")
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
     if rerun or not os.path.isfile(log_filename):
-        write_instance(instance, instance_name, instance_filename, n_nodes)
+        write_instance(instance, instance_name, instance_filename, N_NODES)
         write_para(None, instance_filename, "LKH", para_filename, max_trials=max_trials)
         with open(log_filename, "w") as f:
             check_call(["./LKH", para_filename], stdout=f)
@@ -103,7 +103,7 @@ def generate_feat(instance_dir, feat_param_dir, feat_dir, instance, instance_nam
     para_filename = os.path.join(feat_param_dir, instance_name + ".para")
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
     feat_filename = os.path.join(feat_dir, instance_name + ".txt")
-    write_instance(instance, instance_name, instance_filename, n_nodes)
+    write_instance(instance, instance_name, instance_filename, N_NODES)
     write_para(feat_filename, instance_filename, "FeatGenerate", para_filename)
     with tempfile.TemporaryFile() as f:
         check_call(["./LKH", para_filename], stdout=f)
@@ -141,11 +141,11 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     instance = {}
     
     instance["TYPE"] = "CVRP"
-    instance["CAPACITY"] = min(max(n_nodes // len(problem_routes) + 10, n_nodes // (n_nodes * max_extra_nodes_ratio - n_nodes + 1)), n_nodes)
+    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * max_extra_nodes_ratio - N_NODES + 1)), N_NODES)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
-    if sample_type == "subroute":
+    if SAMPLE_TYPE == "subroute":
         package_coords = []
         for df in problem_routes:
             # map package point to graph node.
@@ -153,7 +153,7 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
             package_coords.append(df[["lat", "lng"]].values)
         package_coords = np.vstack(package_coords)
     else:
-        assert sample_type == "scatter"
+        assert SAMPLE_TYPE == "scatter"
         package_coords = scatter_goods[["lat", "lng"]].values
     package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
     corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
@@ -162,7 +162,7 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
     # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
     instance["DEPOT"] = 1
-    instance["DEMAND"] = np.ones(n_nodes, dtype=int)
+    instance["DEMAND"] = np.ones(N_NODES, dtype=int)
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
 
     additional_instance_feats = {}
@@ -177,7 +177,7 @@ def gen_CVRPTW_instance(graph, gdf_nodes, additional_feats, problem_meta):
     instance = {}
     
     instance["TYPE"] = "CVRP"
-    instance["CAPACITY"] = min(n_nodes // len(problem_routes) + 10, n_nodes)
+    instance["CAPACITY"] = min(N_NODES // len(problem_routes) + 10, N_NODES)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
@@ -200,7 +200,7 @@ def gen_CVRPTW_instance(graph, gdf_nodes, additional_feats, problem_meta):
     # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
     # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
     instance["DEPOT"] = 1
-    instance["DEMAND"] = np.ones(n_nodes, dtype=int)
+    instance["DEMAND"] = np.ones(N_NODES, dtype=int)
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
     
     return instance
@@ -246,7 +246,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
 
     edge_feat_list = []
     feat_item = dataset[0]["ATTACHMENT"]
-    for feat_class in feat_item.keys():
+    for feat_class in FEATS:
         if feat_class.feat_type != "edge":
             continue
         feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
@@ -281,11 +281,11 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         
 if __name__ == "__main__":
     # global variables
-    n_nodes = args.n_nodes
-    sample_type = args.sample_type
+    N_NODES = args.n_nodes
+    SAMPLE_TYPE = args.sample_type
+    FEATS = get_all_feats()
     
     pool = mp.Pool(args.num_cpus)
-    feats = get_all_feats()
 
     for city in args.citys:
         # pickup 数据有缺失，只使用 delivery
@@ -314,7 +314,7 @@ if __name__ == "__main__":
 
             # generate additional features
             additional_meta = {}
-            for feat in feats:
+            for feat in FEATS:
                 additional_meta[feat] = feat.generate_problem_meta(rdf, graph, gdf_nodes)
             
             # generate global statistics/features
@@ -369,7 +369,7 @@ if __name__ == "__main__":
                             break
                         
                     # generate instance using scatter goods
-                    scatter_goods = rdf.loc[np.random.choice(rdf.index, size = n_nodes, replace=False)]
+                    scatter_goods = rdf.loc[np.random.choice(rdf.index, size = N_NODES, replace=False)]
                     problems_meta.append((problem_routes, scatter_goods))
                 
                 # generate spcific part of instances 
@@ -385,6 +385,6 @@ if __name__ == "__main__":
             train_instance = process_rdf(train_rdf, args.n_samples)
             val_instance = process_rdf(val_rdf, 32)
             
-            generate_dataset(train_instance, n_nodes, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")
-            generate_dataset(val_instance, n_nodes, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{n_nodes}_{args.postfix}")
+            generate_dataset(train_instance, N_NODES, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{N_NODES}_{args.postfix}")
+            generate_dataset(val_instance, N_NODES, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{N_NODES}_{args.postfix}")
     

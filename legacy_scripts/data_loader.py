@@ -62,5 +62,3 @@ class DataLoader(object):
             label = dataset["label"][batch_index_inside_dataset * batch_size : (batch_index_inside_dataset + 1) * batch_size] # b x 1000
             self.batch_index += 1
             return (node_feat, edge_feat, label, edge_index, inverse_edge_index)
-
-
