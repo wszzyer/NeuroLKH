@@ -21,10 +21,11 @@ def get_args():
     parser.add_argument('--n_gcn_layers', type=int, default=30, help='')
     parser.add_argument('--n_mlp_layers', type=int, default=3, help='')
     parser.add_argument('--learning_rate', type=float, default=0.00001, help='')
-    parser.add_argument('--save_interval', type=int, default=5, help='')
+    parser.add_argument('--save_interval', type=int, default=25, help='')
     parser.add_argument('--save_dir', type=str, default="saved/exp1/", help='')
     parser.add_argument('--load_pt', type=str, default="", help='')
     parser.add_argument('--device', type=str, default="cuda:0", help='')
+    parser.add_argument('--early_stop_thres', type=int, default=20)
     parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
     return parser.parse_args()
 
@@ -44,16 +45,21 @@ if __name__ == "__main__":
     net.to(args.device)
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
     train_dataset = LaDeDataset(file_path=args.file_path, used_feats=used_feats, problem="cvrp")
-    test_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem="cvrp")
+    val_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem="cvrp")
 
+    start_epoch  = 0
+    best_loss = 1e7
+    worse_count = 0
     if args.load_pt:
         saved = torch.load(args.load_pt)
-        epoch = saved["epoch"]
+        start_epoch = saved["epoch"] + 1
+        best_loss = saved["best_loss"]
         net.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
-    for epoch in range(args.n_epoch):
+    for epoch in range(start_epoch, args.n_epoch):
         statistics = {"loss_train": [],
                     "train_sample_count": 0,
                     "loss_val": [],
@@ -86,6 +92,7 @@ if __name__ == "__main__":
             rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
             
             pbar.set_postfix({"train_loss": loss_edges.item()})
+        scheduler.step()
         print (f"Epoch {epoch} loss {np.sum(statistics["loss_train"])/statistics["train_sample_count"]:.7f} rank:", ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(MAGIC)]))
 
         if epoch % args.eval_interval == 0:
@@ -94,8 +101,8 @@ if __name__ == "__main__":
             dataset_rank = []
             dataset_norms = []
 
-            for test_batch in DataLoader(test_dataset, batch_size=args.eval_batch_size, collate_fn=test_dataset.collate_fn):
-                node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), test_batch)
+            for val_batch in DataLoader(val_dataset, batch_size=args.eval_batch_size, collate_fn=val_dataset.collate_fn):
+                node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
                 with torch.no_grad():
                     batch_size = node_feat.shape[0]
                     n_nodes = node_feat.size(1)
@@ -109,8 +116,21 @@ if __name__ == "__main__":
                     statistics["loss_val"].append(loss_edges.detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
             eval_results.append(np.mean(dataset_rank) + 1)
-            print (f"{args.eval_file_path} loss {np.sum(statistics['loss_val'])/statistics['val_sample_count']:.7f}")
+            avg_loss = np.sum(statistics['loss_val'])/statistics['val_sample_count']
+            print (f"{args.eval_file_path} loss {avg_loss:.7f}")
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                worse_count = 0
+                torch.save(net.state_dict(), args.save_dir + f"/best.pth")
+            else:
+                worse_count += 1
+                if worse_count >  args.early_stop_thres:
+                    print("Early stop triggered, stop training.")
+                    break
 
-        epoch += 1
         if epoch % args.save_interval == 0:
-            torch.save({"epoch": epoch, "model": net.state_dict(), "optimizer": optimizer.state_dict()}, args.save_dir + "/" + str(epoch) + ".pt")
+            torch.save({"epoch": epoch, 
+                        "best_loss": best_loss,
+                        "model": net.state_dict(), 
+                        "optimizer": optimizer.state_dict()
+                        },args.save_dir + f"/{epoch}.pth")

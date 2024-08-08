@@ -14,8 +14,6 @@ class SSSPFeat(NeuralLKHFeat):
     
     @classmethod
     def _generate_weight(cls, graph, gdf_nodes, node_indexes):
-        graph_coords = gdf_nodes[["y", "x"]].values
-        
         distmat = calc_distmat(graph, gdf_nodes.index[node_indexes], gdf_nodes)
         distmat = (distmat + distmat.T) / 2
         return distmat.astype(int)
