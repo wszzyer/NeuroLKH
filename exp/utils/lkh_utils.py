@@ -34,7 +34,8 @@ def write_para(feat_filename, instance_filename, method, para_filename, max_tria
         f.write("PROBLEM_FILE = " + instance_filename + "\n")
         f.write("PRECISION = 1\n")
         f.write("MAX_TRIALS = " + str(max_trials) + "\n")
-        f.write("SPECIAL\nRUNS = 1\n")
+        f.write("SPECIAL\n")
+        f.write("RUNS = 1\n")
         f.write("SEED = " + str(seed) + "\n")
         if method == "FeatGenerate":
             # f.write("GerenatingFeature\n")
@@ -55,7 +56,6 @@ def read_feat(feat_filename, max_nodes):
         for j in range(n_nodes_extend):
             line = lines[j + 1].strip().split(" ")
             line = [int(_) for _ in line]
-            assert len(line) == 43
             assert line[0] == j + 1
             for _ in range(n_neighbours):
                 edge_index[0, j, _] = line[3 + _ * 2] - 1

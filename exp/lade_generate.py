@@ -3,7 +3,7 @@ import os
 import multiprocessing as mp
 import argparse
 import tqdm
-from itertools import cycle, islice
+from itertools import islice
 from subprocess import check_call
 import tempfile
 import pickle
@@ -15,6 +15,7 @@ import numpy as np
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_feat, read_results, write_instance, write_para
+from utils.utils import smooth_matrix
 
 max_extra_nodes_ratio = 1.15
 fetch_lade()
@@ -324,7 +325,7 @@ if __name__ == "__main__":
             for courier_id, courier_rdf in rdf.groupby("courier_id"):
                 for _, courier_day_rdf in courier_rdf.groupby(courier_rdf["delivery_time"].dt.date):
                     route_coords = courier_day_rdf[["lat", "lng"]].values
-                    route_coords = transform_crs(route_coords, source_crs, target_crs)
+                    route_coords = transform_crs(route_coords, SOURCE_CRS, TARGET_CRS)
                     package_to_node_dist = np.linalg.norm(route_coords[:, None] - graph_coords[None], axis=-1)
                     corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
                     od[corresponding_graph_index[:-1], corresponding_graph_index[1:]] += 1
@@ -385,6 +386,7 @@ if __name__ == "__main__":
             train_instance = process_rdf(train_rdf, args.n_samples)
             val_instance = process_rdf(val_rdf, 32)
             
-            generate_dataset(train_instance, N_NODES, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{N_NODES}_{args.postfix}")
-            generate_dataset(val_instance, N_NODES, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{N_NODES}_{args.postfix}")
+            postfix = "_" + args.postfix if args.postfix else ""
+            generate_dataset(train_instance, N_NODES, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}")
+            generate_dataset(val_instance, N_NODES, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}")
     
