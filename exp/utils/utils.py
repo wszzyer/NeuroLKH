@@ -1,5 +1,12 @@
 import numpy as np
 import networkx as nx
+import functools
+
+def map_wrapper(func):
+    @functools.wraps(func)
+    def expand_args_for_func(args):
+        return func(*args)
+    return expand_args_for_func
 
 def smooth_matrix(adjs, mat: np.ndarray):
     # mat[u][v] will be aggregated by u's neighbours and v's neighbours.    

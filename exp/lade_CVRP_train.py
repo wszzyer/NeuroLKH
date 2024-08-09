@@ -93,7 +93,7 @@ if __name__ == "__main__":
             
             pbar.set_postfix({"train_loss": loss_edges.item()})
         scheduler.step()
-        print (f"Epoch {epoch} loss {np.sum(statistics["loss_train"])/statistics["train_sample_count"]:.7f} rank:", ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(MAGIC)]))
+        print (f"Epoch {epoch} loss {np.sum(statistics['loss_train'])/statistics['train_sample_count']:.7f} rank:", ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(MAGIC)]))
 
         if epoch % args.eval_interval == 0:
             net.eval()

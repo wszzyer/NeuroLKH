@@ -4,7 +4,7 @@ import multiprocessing as mp
 import argparse
 import tqdm
 from itertools import islice
-from subprocess import check_call
+from subprocess import check_call, DEVNULL
 import tempfile
 import pickle
 import functools
@@ -14,101 +14,96 @@ import numpy as np
 
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_feat, read_results, write_instance, write_para
-from utils.utils import smooth_matrix
+from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate
+from utils.utils import smooth_matrix, map_wrapper
 
 max_extra_nodes_ratio = 1.15
 fetch_lade()
 np.random.seed(114514)
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--num-cpus",
-    type=int,
-    default=32,
-    help="num cpus pool"
-)
-parser.add_argument(
-    "--n-nodes",
-    type=int,
-    default=100,
-    help="num nodes"
-)
-parser.add_argument(
-    "--n-samples",
-    type=int,
-    default=1024,
-    help="num samples"
-)
-parser.add_argument(
-    "--train-ratio",
-    type=float,
-    default=0.8,
-    help="train dataset ratio"
-)
-parser.add_argument(
-    "--problem",
-    type=str,
-    default="CVRP",
-    choices=["TSP", "CVRP", "CVRPTW", "PDP"],
-    help="which problem"
-)
-parser.add_argument(
-    "--citys",
-    action="append",
-    dest="citys",
-    help="citys to generate data"
-)
-parser.add_argument(
-    "--n-regions",
-    type=int,
-    default=1,
-    help="only generate datasets for largest `--n-regions`"
-)
-parser.add_argument(
-    "--sample-type",
-    type=str,
-    default="scatter",
-    choices=["scatter",  "subroute"],
-    help="scatter: sample directly from all tasks. "
-)
-parser.add_argument(
-    "--postfix",
-    type=str,
-    default="",
-    help="dataset postfix"
-)
-args = parser.parse_args()
-
-
-def map_wrapper(func):
-    @functools.wraps(func)
-    def expand_args_for_func(args):
-        return func(*args)
-    return expand_args_for_func
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--num-cpus",
+        type=int,
+        default=32,
+        help="num cpus pool"
+    )
+    parser.add_argument(
+        "--n-nodes",
+        type=int,
+        default=100,
+        help="num nodes"
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=1024,
+        help="num samples"
+    )
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=0.8,
+        help="train dataset ratio"
+    )
+    parser.add_argument(
+        "--problem",
+        type=str,
+        default="CVRP",
+        choices=["TSP", "CVRP", "CVRPTW", "PDP"],
+        help="which problem"
+    )
+    parser.add_argument(
+        "--citys",
+        action="append",
+        dest="citys",
+        help="citys to generate data"
+    )
+    parser.add_argument(
+        "--n-regions",
+        type=int,
+        default=1,
+        help="only generate datasets for largest `--n-regions`"
+    )
+    parser.add_argument(
+        "--sample-type",
+        type=str,
+        default="scatter",
+        choices=["scatter",  "subroute"],
+        help="scatter: sample directly from all tasks. "
+    )
+    parser.add_argument(
+        "--postfix",
+        type=str,
+        default="",
+        help="dataset postfix"
+    )
+    return parser.parse_args()
 
 @map_wrapper
-def solve_LKH(instance_dir, LKH_param_dir, LKH_log_dir, instance, instance_name, rerun=False, max_trials=1000):
-    para_filename = os.path.join(LKH_param_dir, instance_name + ".para")
-    log_filename = os.path.join(LKH_log_dir, instance_name + ".log")
+def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, n_nodes_extend=None):
+    """
+    solve LKH or NeuroLKH or generate candidate set. (if candidate is given.)
+    """
+    N_NODES = instance["COORD"].__len__() # this will be refactored.
+    para_filename = os.path.join(param_dir, instance_name + ".para")
+    log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
+    candidate_filename = os.path.join(candidate_dir, instance_name + ".txt") if candidate_dir else None
     if rerun or not os.path.isfile(log_filename):
         write_instance(instance, instance_name, instance_filename, N_NODES)
-        write_para(None, instance_filename, "LKH", para_filename, max_trials=max_trials)
-        with open(log_filename, "w") as f:
-            check_call(["./LKH", para_filename], stdout=f)
-    return read_results(log_filename, max_trials)
-
-@map_wrapper
-def generate_feat(instance_dir, feat_param_dir, feat_dir, instance, instance_name, max_nodes):
-    para_filename = os.path.join(feat_param_dir, instance_name + ".para")
-    instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
-    feat_filename = os.path.join(feat_dir, instance_name + ".txt")
-    write_instance(instance, instance_name, instance_filename, N_NODES)
-    write_para(feat_filename, instance_filename, "FeatGenerate", para_filename)
-    with tempfile.TemporaryFile() as f:
+        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials)
+        if candidate is not None:
+            write_candidate(candidate_filename, candidate, n_nodes_extend)
+        f = open(log_filename, "w") if log_filename else DEVNULL
         check_call(["./LKH", para_filename], stdout=f)
-    return read_feat(feat_filename, max_nodes)
+    
+    if task == "LKH" or task == "NeuroLKH":
+        return result_hook(log_filename, max_trials)
+    else:
+        assert task == "FeatGenerate"
+        return result_hook(candidate_filename, max_nodes)
 
 def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     problem_routes, scatter_goods = problem_meta
@@ -241,8 +236,8 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     # construct edge features.
     # dummy_mat is matrix with duplicated depot nodes.
-    feats = list(tqdm.tqdm(pool.imap(generate_feat, [(instance_dir, feat_param_dir, feat_dir, dataset[i], str(i), max_nodes) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
-    edge_index, n_nodes_extend = list(zip(*feats))
+    feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
+    edge_index, n_nodes_extend, _ = list(zip(*feats))
     edge_index = np.concatenate(edge_index, 0)
 
     edge_feat_list = []
@@ -263,7 +258,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     # construct edge label.
-    results = list(tqdm.tqdm(pool.imap(solve_LKH, [(instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
         result = np.array(results[i]) - 1
@@ -282,6 +277,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         
 if __name__ == "__main__":
     # global variables
+    args = get_args()
     N_NODES = args.n_nodes
     SAMPLE_TYPE = args.sample_type
     FEATS = get_all_feats()
@@ -386,7 +382,18 @@ if __name__ == "__main__":
             train_instance = process_rdf(train_rdf, args.n_samples)
             val_instance = process_rdf(val_rdf, 32)
             
+            
             postfix = "_" + args.postfix if args.postfix else ""
-            generate_dataset(train_instance, N_NODES, f"{args.problem}_train_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}")
-            generate_dataset(val_instance, N_NODES, f"{args.problem}_val_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}")
+            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}"
+            
+            # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
+            # 目前用验证集的 instance 当成测试集，周六再改。
+            os.makedirs("data/raw_instance", exist_ok=True)
+            with open("data/raw_instance/" + dataset_name_template % "train_raw" + ".pkl", "wb") as f:
+                pickle.dump(train_instance, f)
+            with open("data/raw_instance/" + dataset_name_template % "val_raw" + ".pkl", "wb") as f:
+                pickle.dump(val_instance, f)
+            
+            generate_dataset(train_instance, N_NODES, dataset_name_template % "train")
+            generate_dataset(val_instance, N_NODES, dataset_name_template % "val")
     

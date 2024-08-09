@@ -44,6 +44,9 @@ def write_para(feat_filename, instance_filename, method, para_filename, max_tria
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
             f.write("CANDIDATE_SET_TYPE = NEAREST-NEIGHBOR\n")
             f.write("MAX_CANDIDATES = 20\n")
+        elif method == "NeuroLKH":
+            f.write("SUBGRADIENT = NO\n")
+            f.write("CANDIDATE_FILE = " + feat_filename + "\n")
         else:
             assert method == "LKH"
             
@@ -56,10 +59,12 @@ def read_feat(feat_filename, max_nodes):
         for j in range(n_nodes_extend):
             line = lines[j + 1].strip().split(" ")
             line = [int(_) for _ in line]
+            assert len(line) == n_neighbours * 2 + 3
             assert line[0] == j + 1
             for _ in range(n_neighbours):
                 edge_index[0, j, _] = line[3 + _ * 2] - 1
-    return edge_index, n_nodes_extend
+    feat_runtime = float(lines[-2].strip())
+    return edge_index, n_nodes_extend, feat_runtime
 
 def read_results(log_filename, max_trials):
     with open(log_filename, "r") as f:
@@ -67,3 +72,14 @@ def read_results(log_filename, max_trials):
         line = line.strip().split(" ")
         result = [int(_) for _ in line]
     return result
+
+def write_candidate(feat_filename, candidate, n_nodes_extend):
+    n_node = candidate.shape[0]
+    with open(feat_filename, "w") as f:
+        f.write(str(n_nodes_extend) + "\n")
+        for j in range(n_nodes_extend):
+            line = str(j + 1) + " 0 5"
+            for _ in range(5):
+                line += " " + str(int(candidate[j, _]) + 1) + " " + str(_ * 100)
+            f.write(line + "\n")
+        f.write("-1\nEOF\n")
