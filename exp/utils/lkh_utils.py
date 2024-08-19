@@ -10,6 +10,8 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
         f.write("DIMENSION : " + str(len(instance["COORD"])) + "\n")
         f.write("EDGE_WEIGHT_TYPE : EXPLICIT\n")
         f.write("EDGE_WEIGHT_FORMAT : FULL_MATRIX\n")
+        if "VEHICLES" in instance:
+            f.write("VEHICLES : " + str(instance["VEHICLES"]) + "\n")
         if "CAPACITY" in instance:
             f.write("CAPACITY : " + str(instance["CAPACITY"]) + "\n")
         if "SERVICE_TIME" in instance:
@@ -25,8 +27,8 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
             f.write("DEPOT_SECTION\n " + str(instance["DEPOT"]) + "\n -1\n")
         if "TIME_WINDOW_SECTION" in instance:
             f.write("TIME_WINDOW_SECTION\n")
-            for i, tw_begin, tw_end in range(n_nodes):
-                f.write(f"{i+1} {tw_begin} {tw_end}")
+            for i, (tw_begin, tw_end) in enumerate(instance["TIME_WINDOW_SECTION"]):
+                f.write(f"{i+1} {tw_begin} {tw_end}\n")
         f.write("EOF\n")
 
 def write_para(feat_filename, instance_filename, method, para_filename, max_trials=1000, seed=1234):

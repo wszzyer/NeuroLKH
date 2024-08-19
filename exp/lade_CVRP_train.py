@@ -11,6 +11,7 @@ from utils.dataset import LaDeDataset
 
 def get_args():  
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--problem', default='cvrp', choices=['cvrp', 'cvrptw'], help='')
     parser.add_argument('--file_path', default='train', help='')
     parser.add_argument('--eval_file_path', default='val', help='')
     parser.add_argument('--n_epoch', type=int, default=10000, help='')
@@ -41,14 +42,14 @@ if __name__ == "__main__":
     MAGIC = 16
     used_feats = parse_feat_strs(args.use_feats)
     print(f"Using feats: {args.use_feats}")
-    net = SparseGCNModel(problem="cvrp", edge_dim=len(used_feats))
+    net = SparseGCNModel(problem=args.problem, edge_dim=len(used_feats))
     net.to(args.device)
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    train_dataset = LaDeDataset(file_path=args.file_path, used_feats=used_feats, problem="cvrp")
-    val_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem="cvrp")
+    train_dataset = LaDeDataset(file_path=args.file_path, used_feats=used_feats, problem=args.problem)
+    val_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem=args.problem)
 
     start_epoch  = 0
     best_loss = 1e7
@@ -67,15 +68,24 @@ if __name__ == "__main__":
         rank_train = [[] for _ in range(MAGIC)]
         net.train()
         
-        edge_labels = train_dataset.dataset["label"].flatten()
+        edge_labels = train_dataset.dataset["label"].flatten() if "label" in train_dataset.dataset else train_dataset.dataset["label1"].flatten()
         edge_cw = compute_class_weight("balanced", classes=np.unique(edge_labels), y=edge_labels)
         edge_cw = torch.tensor(edge_cw, dtype=torch.float32, device=args.device)
         pbar = tqdm(DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=train_dataset.collate_fn))
         for index, batch in enumerate(pbar):
-            node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
+            if args.problem == "cvrp":
+                node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
+            else:
+                assert args.problem == "cvrptw"
+                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), batch)
             batch_size = node_feat.shape[0]
-            y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-            loss_edges = loss_edges.mean()
+            if args.problem == "cvrp":
+                y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
+                loss_edges = loss_edges.mean()
+            else:
+                assert args.problem == "cvrptw"
+                y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
+                loss_edges = loss_edges1.mean() + loss_edges2.mean()
 
             n_nodes = node_feat.size(1)
             loss = loss_edges
@@ -84,12 +94,12 @@ if __name__ == "__main__":
             statistics["train_sample_count"] += batch_size
             optimizer.step()
             optimizer.zero_grad()
-            y_edges = y_edges.detach().cpu().numpy()
-            label = label.cpu().numpy()
 
-            rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-            rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
-            rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+            # y_edges = y_edges.detach().cpu().numpy()
+            # label = label.cpu().numpy()
+            # rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
+            # rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+            # rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
             
             pbar.set_postfix({"train_loss": loss_edges.item()})
         scheduler.step()
@@ -102,17 +112,29 @@ if __name__ == "__main__":
             dataset_norms = []
 
             for val_batch in DataLoader(val_dataset, batch_size=args.eval_batch_size, collate_fn=val_dataset.collate_fn):
-                node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
+                if args.problem == "cvrp":
+                    node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
+                else:
+                    assert args.problem == "cvrptw"
+                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
+
                 with torch.no_grad():
                     batch_size = node_feat.shape[0]
                     n_nodes = node_feat.size(1)
-                    y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-                    loss_edges = loss_edges.mean()
-                    y_edges = y_edges.detach().cpu().numpy()
-                    label = label.cpu().numpy()
-                    rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-                    rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
-                    dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+
+                    if args.problem == "cvrp":
+                        y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
+                        loss_edges = loss_edges.mean()
+                    else:
+                        assert args.problem == "cvrptw"
+                        y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
+                        loss_edges = loss_edges1.mean() + loss_edges2.mean()
+
+                    # y_edges = y_edges.detach().cpu().numpy()
+                    # label = label.cpu().numpy()
+                    # rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
+                    # rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+                    # dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
                     statistics["loss_val"].append(loss_edges.detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
             eval_results.append(np.mean(dataset_rank) + 1)

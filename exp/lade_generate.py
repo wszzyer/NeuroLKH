@@ -5,80 +5,35 @@ import argparse
 import tqdm
 from itertools import islice
 from subprocess import check_call, DEVNULL
-import tempfile
+import statistics
 import pickle
 import functools
 
 import pandas as pd
 import numpy as np
 
-from feats import get_all_feats
-from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
+from feats import get_all_feats, attach_space_syntax
+from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate
 from utils.utils import smooth_matrix, map_wrapper
 
+care_extend_nodes = None
+split_edge_label = None
 max_extra_nodes_ratio = 1.15
 fetch_lade()
 np.random.seed(114514)
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--num-cpus",
-        type=int,
-        default=32,
-        help="num cpus pool"
-    )
-    parser.add_argument(
-        "--n-nodes",
-        type=int,
-        default=100,
-        help="num nodes"
-    )
-    parser.add_argument(
-        "--n-samples",
-        type=int,
-        default=1024,
-        help="num samples"
-    )
-    parser.add_argument(
-        "--train-ratio",
-        type=float,
-        default=0.8,
-        help="train dataset ratio"
-    )
-    parser.add_argument(
-        "--problem",
-        type=str,
-        default="CVRP",
-        choices=["TSP", "CVRP", "CVRPTW", "PDP"],
-        help="which problem"
-    )
-    parser.add_argument(
-        "--citys",
-        action="append",
-        dest="citys",
-        help="citys to generate data"
-    )
-    parser.add_argument(
-        "--n-regions",
-        type=int,
-        default=1,
-        help="only generate datasets for largest `--n-regions`"
-    )
-    parser.add_argument(
-        "--sample-type",
-        type=str,
-        default="scatter",
-        choices=["scatter",  "subroute"],
-        help="scatter: sample directly from all tasks. "
-    )
-    parser.add_argument(
-        "--postfix",
-        type=str,
-        default="",
-        help="dataset postfix"
-    )
+    parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool"    )
+    parser.add_argument("--n-nodes", type=int, default=100, help="num nodes"    )
+    parser.add_argument("--n-samples", type=int, default=1024, help="num samples"    )
+    parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio"    )
+    parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem"    )
+    parser.add_argument("--citys", action="append", dest="citys", help="citys to generate data"    )
+    parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`"    )
+    parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks. "    )
+    parser.add_argument("--postfix", type=str, default="", help="dataset postfix"    )
     return parser.parse_args()
 
 @map_wrapper
@@ -132,26 +87,27 @@ def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     
     return instance
 
-def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
+def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, problem_meta, withTW = False):
     problem_routes, scatter_goods = problem_meta
     instance = {}
     
-    instance["TYPE"] = "CVRP"
+    instance["TYPE"] = "CVRP" if not withTW else "CVRPTW"
     instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * max_extra_nodes_ratio - N_NODES + 1)), N_NODES)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
     if SAMPLE_TYPE == "subroute":
-        package_coords = []
-        for df in problem_routes:
-            # map package point to graph node.
-            # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
-            package_coords.append(df[["lat", "lng"]].values)
-        package_coords = np.vstack(package_coords)
+        whole_df = pd.concat(problem_routes)
+        package_coords = whole_df[["lat", "lng"]].values
+        package_time_df = whole_df[["delivery_time", "accept_time"]]
     else:
         assert SAMPLE_TYPE == "scatter"
         package_coords = scatter_goods[["lat", "lng"]].values
+        package_time_df = scatter_goods[["delivery_time", "accept_time"]]
+
     package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
+    # map package point to graph node.
+    # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
     corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
     
     instance["COORD"] = graph_coords[corresponding_graph_index]
@@ -160,6 +116,22 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     instance["DEPOT"] = 1
     instance["DEMAND"] = np.ones(N_NODES, dtype=int)
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
+
+    if withTW:
+        # 时间窗口的尺度是距离。
+        # below parameters can be tuned.
+        instance["VEHICLES"] = 20
+        instance["CAPACITY"] = 10000
+        twpadding = pd.Timedelta(minutes=15) 
+        # SERVICE_TIME don't work in CVRPTW problem.
+        instance["SERVICE_TIME"] = pd.Timedelta(minutes=5).total_seconds()
+        tw_begin = (package_time_df["delivery_time"] - package_time_df["accept_time"] - twpadding).clip(lower=pd.Timedelta(0))
+        tw_end = tw_begin + twpadding * 2
+        tw_begin_dist = tw_begin.dt.total_seconds() * additional_statistic["velocity"]
+        tw_end_dist = tw_end.dt.total_seconds() * additional_statistic["velocity"]
+        latest = (tw_end.max().total_seconds() + 1000000) * additional_statistic["velocity"]
+        instance["TIME_WINDOW_SECTION"] = np.stack([tw_begin_dist, tw_end_dist], axis=1)
+        instance["TIME_WINDOW_SECTION"][instance["DEPOT"] - 1] = [0, latest]
 
     additional_instance_feats = {}
     for feat_class, problem_meta in additional_feats.items():
@@ -168,44 +140,11 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     
     return instance
 
-def gen_CVRPTW_instance(graph, gdf_nodes, additional_feats, problem_meta):
-    problem_routes, scatter_goods = problem_meta
-    instance = {}
-    
-    instance["TYPE"] = "CVRP"
-    instance["CAPACITY"] = min(N_NODES // len(problem_routes) + 10, N_NODES)
-    
-    graph_coords = gdf_nodes[["y", "x"]].values
-    
-    package_coords = []
-    for df in problem_routes:
-        # map package point to graph node.
-        # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
-        package_coords.append(df[["lat", "lng"]].values)
-    package_coords = np.vstack(package_coords)
-    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
-    corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
-    
-    instance["COORD"] = graph_coords[corresponding_graph_index]
-
-    additional_instance_feats = {}
-    for feat_class, problem_meta in additional_feats.items():
-        additional_instance_feats[feat_class] = feat_class.generate_cvrptw_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
-    instance["ATTACHMENT"] = additional_instance_feats
-
-    # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
-    # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
-    instance["DEPOT"] = 1
-    instance["DEMAND"] = np.ones(N_NODES, dtype=int)
-    instance["DEMAND"][instance["DEPOT"] - 1] = 0
-    
-    return instance
-
 def generate_dataset(dataset, n_nodes, dataset_name):
     # configs.
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = int(n_nodes * max_extra_nodes_ratio)
+    max_nodes = int(n_nodes * max_extra_nodes_ratio) if care_extend_nodes else n_nodes
     n_neighbours = 20
     
     # temperory directories.
@@ -228,17 +167,26 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     capacity = np.zeros([n_samples, max_nodes], dtype=int)
     capacity[:, 0] = np.array([d["CAPACITY"] for d in dataset])
     capacity[:, n_nodes:] = capacity[:, :1]
+    start_end_time = np.stack([d["TIME_WINDOW_SECTION"] for d in dataset])
     assert dataset[0]["DEPOT"] == 1
     x = np.stack([d["COORD"] for d in dataset])
     x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
-    # coords needs scale for faster training.
-    node_feat = np.concatenate([x, demand[:, :, None], capacity[:, :, None]], -1)
+
+    node_feats_scratch = [x, demand[:, :, None], capacity[:, :, None]]
+    if dataset[0]["TYPE"] == "CVRPTW":
+        node_feats_scratch += [start_end_time[..., 0:1], start_end_time[..., 1:2]]
+    node_feat = np.concatenate(node_feats_scratch, -1)
     
-    # construct edge features.
-    # dummy_mat is matrix with duplicated depot nodes.
-    feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
-    edge_index, n_nodes_extend, _ = list(zip(*feats))
-    edge_index = np.concatenate(edge_index, 0)
+    if care_extend_nodes:
+        # construct edge features.
+        # dummy_mat is matrix with duplicated depot nodes.
+        feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
+        edge_index, n_nodes_extend, _ = list(zip(*feats))
+        edge_index = np.concatenate(edge_index, 0)
+    else:
+        from feats.weight_feat import SSSPFeat
+        dist = np.stack([instance["ATTACHMENT"][SSSPFeat] for instance in dataset])
+        edge_index = np.argsort(dist, -1)[:, :, 1:1 + n_neighbours]
 
     edge_feat_list = []
     for feat_class in FEATS:
@@ -258,19 +206,33 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     # construct edge label.
     results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    if not care_extend_nodes:
+        results = np.array(results)
+        results[results > n_nodes] = 0
+    
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
+    label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
         result = np.array(results[i]) - 1
-        label[i][result, np.roll(result, 1)] = True
-        label[i][np.roll(result, 1), result] = True
+        label[i][result, np.roll(result, 1, -1)] = True
+        if not split_edge_label:
+            label[i][np.roll(result, 1, -1), result] = True
+        else:
+            label2[i][np.roll(result, 1, -1), result] = True
     label = label[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]    
+    label2 = label2[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     feat = {"node_feat":node_feat,
             "edge_feat":edge_feat,
             "edge_index":edge_index,
-            "inverse_edge_index":inverse_edge_index,
-            "label":label}
-        
+            "inverse_edge_index":inverse_edge_index
+            }
+    if not split_edge_label:
+        feat["label"] = label
+    else:
+        feat["label1"] = label
+        feat["label2"] = label2
+
     with open("data/generated/" + dataset_name + ".pkl", "wb") as f:
         pickle.dump(feat, f)
         
@@ -280,11 +242,19 @@ if __name__ == "__main__":
     N_NODES = args.n_nodes
     SAMPLE_TYPE = args.sample_type
     FEATS = get_all_feats()
-    
+    if args.problem == "CVRPTW":
+        care_extend_nodes = False
+        split_edge_label = True
+    else:
+        care_extend_nodes = True
+        split_edge_label = False
+    trajectory_df = None
+
     pool = mp.Pool(args.num_cpus)
 
     for city in args.citys:
         # pickup 数据有缺失，只使用 delivery
+        # accept_gps_lng/accept_gps_lat 数据完全是乱的，根本没法用。
         df = pd.read_csv(f"./data/LaDeArchive/delivery/delivery_{city}.csv")
         for data_col in ["accept_time", "accept_gps_time", "delivery_time", "delivery_gps_time"]:
             df[data_col] = pd.to_datetime("2023-" + df[data_col], format='%Y-%m-%d %H:%M:%S')
@@ -296,7 +266,8 @@ if __name__ == "__main__":
             bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
-            graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
+            graph, gdf_nodes, gdf_edges = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
+            attach_space_syntax(graph, gdf_nodes, gdf_edges)
             rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
             print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
             
@@ -312,7 +283,32 @@ if __name__ == "__main__":
             additional_meta = {}
             for feat in FEATS:
                 additional_meta[feat] = feat.generate_problem_meta(rdf, graph, gdf_nodes)
-                
+            
+            # generate dataset statistic informations
+            additional_statistic = {}
+            if args.problem == "CVRPTW":
+                # this process is too slow, use calculated velocity by yt-111
+                additional_statistic["velocity"] = 1.3475401310142756
+
+                # if trajectory_df is None:
+                #     trajectory_df = pd.read_pickle("data/LaDeArchive/data_with_trajectory_20s/courier_detailed_trajectory_20s.pkl")
+                # bbox_encode = pd.DataFrame([[bbox[1], bbox[3]], [bbox[0], bbox[2]]], columns=["lat", "lng"])
+                # encode_gps_traj(bbox_encode)
+                # region_traj_df = trajectory_df[(trajectory_df["lat"] >= bbox_encode.loc[0, "lat"]) & 
+                #                                 (trajectory_df["lat"] <= bbox_encode.loc[1, "lat"]) &
+                #                                 (trajectory_df["lng"] >= bbox_encode.loc[0, "lng"]) &
+                #                                 (trajectory_df["lng"] <= bbox_encode.loc[1, "lng"])].copy()
+                # decode_gps_traj(region_traj_df)
+                # region_traj_df["gps_time"] = pd.to_datetime("2023-" + region_traj_df["gps_time"], format='%Y-%m-%d %H:%M:%S')
+                # most_day = statistics.multimode(region_traj_df["gps_time"].dt.date)[0]
+                # day_traj_df = region_traj_df[region_traj_df["gps_time"].dt.date == most_day]
+                # adjacent_time = day_traj_df.iloc[1:]["gps_time"].reset_index(drop = True) - day_traj_df.iloc[:-1]["gps_time"].reset_index(drop = True)
+                # coords_proj = transform_crs(day_traj_df[["lat", "lng"]].values, SOURCE_CRS, TARGET_CRS)
+                # adjacent_length = np.linalg.norm(coords_proj[1:] - coords_proj[:-1], axis=-1)
+                # valid_mask = (adjacent_time < pd.Timedelta(minutes=1)) & (adjacent_time > pd.Timedelta(minutes=0))
+                # velocity = (adjacent_length / (adjacent_time.astype(int)/1e9) )[valid_mask].mean()
+                # additional_statistic["velocity"] = velocity
+
             def process_rdf(rdf, n_samples):
                 sub_routes = []
                 for courier_id, courier_rdf in rdf.groupby("courier_id"):
@@ -355,10 +351,10 @@ if __name__ == "__main__":
                 generate_function = {
                     "TSP": gen_TSP_instance,
                     "CVRP": gen_CVRP_instance,
-                    "CVRPTW": gen_CVRPTW_instance,
+                    "CVRPTW": functools.partial(gen_CVRP_instance, withTW = True),
                     "PDP": None
                 }[args.problem]
-                return list(tqdm.tqdm(pool.imap(functools.partial(generate_function, graph, gdf_nodes, additional_meta), problems_meta,
+                return list(tqdm.tqdm(pool.imap(functools.partial(generate_function, graph, gdf_nodes, additional_meta, additional_statistic), problems_meta,
                                                  chunksize=min(32, n_samples // 8)), desc='Generating Instance', total=n_samples))
                 
             train_instance = process_rdf(train_rdf, args.n_samples)

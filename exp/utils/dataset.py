@@ -12,8 +12,17 @@ class LaDeDataset(Dataset):
             index_map.append(get_feat_index(feat))
         with open(self.file_path, "rb") as f:
             self.dataset = pickle.load(f)
+        # we use BatchNorm instead of standardization.
         # standardization
-        self.dataset["node_feat"] = (self.dataset["node_feat"]  - [4.1662e+06, 8.7300e+05, 0., 0.]) / [2.5976e+03, 5.0038e+03, 1., 1.]
+        # bias = {
+        #     "cvrp": [4.1662e+06, 8.7300e+05, 0., 0.],
+        #     "cvrptw": [4.1662e+06, 8.7300e+05, 0., 0., 0., 0.]
+        # }
+        # std = {
+        #     "cvrp": [2.5976e+03, 5.0038e+03, 1., 1.],
+        #     "cvrptw": [2.5976e+03, 5.0038e+03, 1., 1., 1e4, 1e4]
+        # }
+        self.dataset["node_feat"] = self.dataset["node_feat"][...]
         self.dataset["edge_feat"] = self.dataset["edge_feat"][..., index_map]
 
         if self.problem == "pdp" or self.problem == "cvrptw":

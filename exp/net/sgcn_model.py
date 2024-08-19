@@ -29,6 +29,8 @@ class SparseGCNModel(nn.Module):
         self.aggregation = "mean"
         self.problem = problem
 
+        self.nodes_batchnorm = nn.BatchNorm1d(affine=False)
+        self.edges_batchnorm = nn.BatchNorm1d(affine=False)
         self.nodes_embedding = nn.Linear(self.node_dim, self.hidden_dim, bias=False)
         self.edges_embedding = nn.Linear(self.edge_dim, self.hidden_dim, bias=False)
         gcn_layers = []
@@ -42,6 +44,9 @@ class SparseGCNModel(nn.Module):
         self.mlp_nodes = MLP(self.hidden_dim, 1, self.n_mlp_layers)
 
     def forward(self, x_nodes, x_edges, edge_index, inverse_edge_index, y_edges, edge_cw, n_edges):
+        # note that you must use model.eval() during evaluation phase, because of BatchNorm
+        x_nodes = self.nodes_batchnorm(x_nodes.transpose(-1, -2)).transpose(-1, -2)
+        y_edges = self.edges_batchnorm(x_edges.transpose(-1, -2)).transpose(-1, -2)
         batch_size, num_nodes, _ = x_nodes.size()
         x = self.nodes_embedding(x_nodes)  # batch_size x n_node x hidden_dimension
         e = self.edges_embedding(x_edges)  # batch_size x n_node * n_edge x hidden_dimension
@@ -95,17 +100,14 @@ class SparseGCNModel(nn.Module):
         for layer in range(self.n_gcn_layers):
             x, e = self.gcn_layers[layer](x, e, edge_index, inverse_edge_index, n_edges)
         y_pred_edges = self.mlp_edges(e).view(batch_size, num_nodes, n_edges, 2)
-
-        y_pred_edges1 = torch.exp(y_pred_edges[:, :, :, 0])
-        y_pred_edges1 = y_pred_edges1 / (y_pred_edges1.sum(2).view(batch_size, num_nodes, 1) + 1e-5)
+        y_pred_edges1 = torch.nn.functional.softmax(y_pred_edges[..., 0], dim=-1)
         y_pred_edges1 = y_pred_edges1.view(batch_size, num_nodes * n_edges, 1)
         y_pred_edges1 = torch.cat([1 - y_pred_edges1, y_pred_edges1], dim = 2)
-        y_pred_edges1 = torch.log(y_pred_edges1)
-        y_pred_edges2 = torch.exp(y_pred_edges[:, :, :, 1])
-        y_pred_edges2 = y_pred_edges2 / (y_pred_edges2.sum(2).view(batch_size, num_nodes, 1) + 1e-5)
+        y_pred_edges1 = torch.log(y_pred_edges1 + 1e-5)
+        y_pred_edges2 = torch.nn.functional.softmax(y_pred_edges[..., 1], dim=-1)
         y_pred_edges2 = y_pred_edges2.view(batch_size, num_nodes * n_edges, 1)
         y_pred_edges2 = torch.cat([1 - y_pred_edges2, y_pred_edges2], dim = 2)
-        y_pred_edges2 = torch.log(y_pred_edges2)
+        y_pred_edges2 = torch.log(y_pred_edges2 + 1e-5)
         if y_edges1 is None:
             return y_pred_edges1, y_pred_edges2, None, None, None
         loss1 = loss_edges(y_pred_edges1, y_edges1, edge_cw)

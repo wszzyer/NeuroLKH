@@ -691,6 +691,8 @@ void ReadProblem()
     if (ProblemType == TSPTW ||
         ProblemType == CVRPTW || ProblemType == VRPBTW ||
         ProblemType == PDPTW || ProblemType == RCTVRPTW) {
+        printf("Time Constraited edge remove has been disabled by zzy, because it may results no valid solution.\n");
+        /*
         M = INT_MAX / 2 / Precision;
         for (i = 1; i <= Dim; i++) {
             Node *Ni = &NodeSet[i];
@@ -701,6 +703,7 @@ void ReadProblem()
                     Ni->C[j] = M;
             }
         }
+        */
         if (ProblemType == TSPTW) {
             for (i = 1; i <= Dim; i++)
                 for (j = 1; j <= Dim; j++)

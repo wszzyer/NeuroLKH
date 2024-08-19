@@ -6,3 +6,4 @@ shapely
 huggingface_hub
 ipdb
 osmnx
+matplotlib

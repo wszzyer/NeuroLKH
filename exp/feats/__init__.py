@@ -1,5 +1,6 @@
 from .od_feat import ODFeat
 from .weight_feat import SSSPFeat
+from .space_syntax import attach_space_syntax
 
 def get_all_feats():
     return (SSSPFeat, ODFeat)

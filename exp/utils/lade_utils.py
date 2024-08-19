@@ -109,11 +109,21 @@ def decode_gps_traj(traj: pd.DataFrame, lng = "lng", lat = "lat") -> None:
     """
     traj_lat_unbiased = traj[lng].values + 2379974.967801108
     traj_lng_unbiased = traj[lat].values + 10143031.442489658
-    traj_unbiased = transform_crs(np.hstack([traj_lat_unbiased, traj_lng_unbiased]), 'EPSG:3857', 'EPSG:4326')
+    traj_unbiased = transform_crs(np.stack([traj_lat_unbiased, traj_lng_unbiased], axis=1), 'EPSG:3857', 'EPSG:4326')
     traj[lat] = traj_unbiased[:, 0]
     traj[lng] = traj_unbiased[:, 1]
+
+def encode_gps_traj(traj: pd.DataFrame, lng = "lng", lat = "lat") -> None:
+    """
+    本段代码涉密，不要外传
+    """
+    traj_unbiased_proj = transform_crs(np.stack([traj[lat].values, traj[lng].values], axis=1) , 'EPSG:4326', 'EPSG:3857')
+    traj[lng] = traj_unbiased_proj[:, 0] - 2379974.967801108
+    traj[lat] = traj_unbiased_proj[:, 1] - 10143031.442489658
 
 def fetch_lade():
     if not os.path.exists("./data/LaDeArchive"):
         snapshot_download(repo_id="Cainiao-AI/LaDe", repo_type="dataset", local_dir = "./data/LaDeArchive", revision="be2cec02775cafc8d52230303f32134382bcc50b")
     
+    if not os.path.exists("data/LaDeArchive/data_with_trajectory_20s/courier_detailed_trajectory_20s.pkl"):
+        os.system("xz -d data/LaDeArchive/data_with_trajectory_20s/courier_detailed_trajectory_20s.pkl.xz")
