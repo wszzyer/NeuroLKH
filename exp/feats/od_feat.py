@@ -8,6 +8,7 @@ from utils.lade_utils import transform_crs, SOURCE_CRS, TARGET_CRS
 
 class ODFeat(NeuralLKHFeat):
     feat_type = "edge"
+    size = 1
 
     @classmethod
     def generate_problem_meta(cls, rdf, graph: MultiDiGraph, gdf_nodes: GeoDataFrame) -> Any:

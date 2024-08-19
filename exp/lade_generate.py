@@ -12,28 +12,29 @@ import functools
 import pandas as pd
 import numpy as np
 
-from feats import get_all_feats, attach_space_syntax
+from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate
 from utils.utils import smooth_matrix, map_wrapper
 
-care_extend_nodes = None
-split_edge_label = None
+allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
+split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
+generate_candidate_by_LKH = None # 是否通过 LKH 生成候选集，否则直接在 python 端生成候选集。
 max_extra_nodes_ratio = 1.15
 fetch_lade()
 np.random.seed(114514)
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool"    )
-    parser.add_argument("--n-nodes", type=int, default=100, help="num nodes"    )
-    parser.add_argument("--n-samples", type=int, default=1024, help="num samples"    )
-    parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio"    )
-    parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem"    )
-    parser.add_argument("--citys", action="append", dest="citys", help="citys to generate data"    )
-    parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`"    )
-    parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks. "    )
-    parser.add_argument("--postfix", type=str, default="", help="dataset postfix"    )
+    parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool")
+    parser.add_argument("--n-nodes", type=int, default=100, help="num nodes")
+    parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
+    parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio")
+    parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
+    parser.add_argument("--citys", action="append", dest="citys", help="citys to generate data")
+    parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
+    parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
+    parser.add_argument("--postfix", type=str, default="", help="dataset postfix")
     return parser.parse_args()
 
 @map_wrapper
@@ -118,11 +119,11 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, 
     instance["DEMAND"][instance["DEPOT"] - 1] = 0
 
     if withTW:
-        # 时间窗口的尺度是距离。
+        # 时间会根据平均速度换算到距离
         # below parameters can be tuned.
-        instance["VEHICLES"] = 20
+        instance["VEHICLES"] = 20 # 这个值设大了，应该小一点。动态点数的问题目前不好解决。
         instance["CAPACITY"] = 10000
-        twpadding = pd.Timedelta(minutes=15) 
+        twpadding = pd.Timedelta(minutes=15)
         # SERVICE_TIME don't work in CVRPTW problem.
         instance["SERVICE_TIME"] = pd.Timedelta(minutes=5).total_seconds()
         tw_begin = (package_time_df["delivery_time"] - package_time_df["accept_time"] - twpadding).clip(lower=pd.Timedelta(0))
@@ -144,7 +145,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     # configs.
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = int(n_nodes * max_extra_nodes_ratio) if care_extend_nodes else n_nodes
+    max_nodes = int(n_nodes * max_extra_nodes_ratio) if allow_extend_nodes else n_nodes
     n_neighbours = 20
     
     # temperory directories.
@@ -167,18 +168,22 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     capacity = np.zeros([n_samples, max_nodes], dtype=int)
     capacity[:, 0] = np.array([d["CAPACITY"] for d in dataset])
     capacity[:, n_nodes:] = capacity[:, :1]
-    start_end_time = np.stack([d["TIME_WINDOW_SECTION"] for d in dataset])
     assert dataset[0]["DEPOT"] == 1
     x = np.stack([d["COORD"] for d in dataset])
     x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
-
-    node_feats_scratch = [x, demand[:, :, None], capacity[:, :, None]]
+    node_feat_list = [x, demand[:, :, None], capacity[:, :, None]]
     if dataset[0]["TYPE"] == "CVRPTW":
-        node_feats_scratch += [start_end_time[..., 0:1], start_end_time[..., 1:2]]
-    node_feat = np.concatenate(node_feats_scratch, -1)
+        start_end_time = np.stack([d["TIME_WINDOW_SECTION"] for d in dataset])
+        node_feat_list += [start_end_time[..., 0:1], start_end_time[..., 1:2]]
+    for feat_class in FEATS:
+        if feat_class.feat_type != "node":
+            continue
+        feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
+        # Pad with node_0 by default.
+        node_feat_list.append(np.concatenate([feat, feat[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], axis=1))
+    node_feat = np.concatenate(node_feat_list, -1)
     
-    if care_extend_nodes:
-        # construct edge features.
+    if generate_candidate_by_LKH:
         # dummy_mat is matrix with duplicated depot nodes.
         feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
         edge_index, n_nodes_extend, _ = list(zip(*feats))
@@ -206,7 +211,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     # construct edge label.
     results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 10000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
-    if not care_extend_nodes:
+    if not allow_extend_nodes:
         results = np.array(results)
         results[results > n_nodes] = 0
     
@@ -222,11 +227,12 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     label = label[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]    
     label2 = label2[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
-    feat = {"node_feat":node_feat,
-            "edge_feat":edge_feat,
-            "edge_index":edge_index,
-            "inverse_edge_index":inverse_edge_index
-            }
+    feat = {
+        "node_feat":node_feat,
+        "edge_feat":edge_feat,
+        "edge_index":edge_index,
+        "inverse_edge_index":inverse_edge_index
+    }
     if not split_edge_label:
         feat["label"] = label
     else:
@@ -243,11 +249,13 @@ if __name__ == "__main__":
     SAMPLE_TYPE = args.sample_type
     FEATS = get_all_feats()
     if args.problem == "CVRPTW":
-        care_extend_nodes = False
+        allow_extend_nodes = False
         split_edge_label = True
+        generate_candidate_by_LKH = False
     else:
-        care_extend_nodes = True
+        allow_extend_nodes = True
         split_edge_label = False
+        generate_candidate_by_LKH = True
     trajectory_df = None
 
     pool = mp.Pool(args.num_cpus)
@@ -267,7 +275,6 @@ if __name__ == "__main__":
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
             graph, gdf_nodes, gdf_edges = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
-            attach_space_syntax(graph, gdf_nodes, gdf_edges)
             rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
             print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
             
@@ -288,7 +295,7 @@ if __name__ == "__main__":
             additional_statistic = {}
             if args.problem == "CVRPTW":
                 # this process is too slow, use calculated velocity by yt-111
-                additional_statistic["velocity"] = 1.3475401310142756
+                additional_statistic["velocity"] = 1.3475401310142756 # meter/second
 
                 # if trajectory_df is None:
                 #     trajectory_df = pd.read_pickle("data/LaDeArchive/data_with_trajectory_20s/courier_detailed_trajectory_20s.pkl")

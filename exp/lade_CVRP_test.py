@@ -1,16 +1,15 @@
 import os
-from subprocess import check_call
 import multiprocessing as mp
 import tqdm
 import numpy as np
 import pickle
 from net.sgcn_model import SparseGCNModel
 import torch
-from torch.autograd import Variable
-from tqdm import trange
+from tqdm import tqdm
 import argparse
 import time
-import tempfile
+from utils.dataset import LaDeTestDataset
+from torch.utils.data import DataLoader
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -28,24 +27,16 @@ from utils.lkh_utils import write_instance, write_para, read_feat, write_candida
 from lade_generate import solve_LKH, max_extra_nodes_ratio
 import lade_generate
 
-def infer_SGN(net, dataset_node_feat, dataset_edge_index, dataset_edge_feat, dataset_inverse_edge_index, batch_size=100):
+def infer_SGN(net, test_loader):
     candidate = []
-    assert dataset_edge_index.shape[0] % batch_size == 0
-    for i in trange(dataset_edge_index.shape[0] // batch_size, desc="infer SGN"):
-        node_feat = dataset_node_feat[i * batch_size:(i + 1) * batch_size]
-        edge_index = dataset_edge_index[i * batch_size:(i + 1) * batch_size]
-        edge_feat = dataset_edge_feat[i * batch_size:(i + 1) * batch_size]
-        inverse_edge_index = dataset_inverse_edge_index[i * batch_size:(i + 1) * batch_size]
-        node_feat = Variable(torch.FloatTensor(node_feat).type(torch.cuda.FloatTensor), requires_grad=False)
-        edge_feat = Variable(torch.FloatTensor(edge_feat).type(torch.cuda.FloatTensor), requires_grad=False).view(batch_size, -1, edge_feat.shape[-1])
-        edge_index = Variable(torch.FloatTensor(edge_index).type(torch.cuda.FloatTensor), requires_grad=False).view(batch_size, -1)
-        inverse_edge_index = Variable(torch.FloatTensor(inverse_edge_index).type(torch.cuda.FloatTensor), requires_grad=False).view(batch_size, -1)
+    for batch in tqdm(test_loader, desc="infer SGN"):
+        node_feat, edge_feat, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
         y_edges, _, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, 20)
         y_edges = y_edges.detach().cpu().numpy()
-        y_edges = y_edges[:, :, 1].reshape(batch_size, dataset_node_feat.shape[1], 20)
+        y_edges = y_edges[:, :, 1].reshape(len(batch), node_feat.shape[1], 20)
         y_edges = np.argsort(-y_edges, -1)
         edge_index = edge_index.cpu().numpy().reshape(-1, y_edges.shape[1], 20)
-        candidate_index = edge_index[np.arange(batch_size).reshape(-1, 1, 1), np.arange(y_edges.shape[1]).reshape(1, -1, 1), y_edges]
+        candidate_index = edge_index[np.arange(len(batch)).reshape(-1, 1, 1), np.arange(y_edges.shape[1]).reshape(1, -1, 1), y_edges]
         candidate.append(candidate_index[:, :, :5])
     candidate = np.concatenate(candidate, 0)
     return candidate
@@ -79,7 +70,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     
     with open(dataset_filename, "rb") as f:
         dataset = pickle.load(f)
-    
+    print(dataset.keys())
     n_nodes = len(dataset[0]["COORD"]) # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
         
     if method == "NeuroLKH":
@@ -112,10 +103,16 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         x = np.stack([d["COORD"] for d in dataset])
         x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
         # coords needs scale for faster training.
-        node_feat = np.concatenate([x, demand[:, :, None], capacity[:, :, None]], -1)
+        node_feat_list = [x, demand[:, :, None], capacity[:, :, None]]
+        for feat_class in FEATS:
+            if feat_class.feat_type != "node":
+                continue
+            feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
+            # Pad with zeros by default. This may cause problems on other features so take care.
+            node_feat_list.append(np.concatenate([feat, np.zeros((feat.shape[0], max_nodes - n_nodes, feat.shape[2]))], axis=1))
+        node_feat = np.concatenate(node_feat_list, -1)
         
         edge_feat_list = []
-        feat_item = dataset[0]["ATTACHMENT"]
         for feat_class in FEATS:
             if feat_class.feat_type != "edge":
                 continue
@@ -132,13 +129,21 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
         
         feat_runtime += time.time() - feat_start_time
-        net = SparseGCNModel(problem="cvrp", edge_dim=len(parse_feat_strs(args.use_feats)))
+
+        node_feats_cls, edge_feats_cls = parse_feat_strs(args.use_feats,  print_result=True)
+        net = SparseGCNModel(problem="cvrp", 
+                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)),
+                         edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)))
         net.cuda()
         saved = torch.load(args.model_path)
         net.load_state_dict(saved)
         sgn_start_time = time.time()
+        
+        test_dataset = LaDeTestDataset("cvrp", node_feat, edge_feat, edge_index, inverse_edge_index, node_feats_cls, edge_feats_cls)
+        assert test_dataset.size % args.batch_size == 0
+        test_loader = DataLoader(test_dataset, batch_size = args.batch_size)
         with torch.no_grad():
-            candidate = infer_SGN(net, node_feat, edge_index, edge_feat, inverse_edge_index, batch_size=args.batch_size)
+            candidate = infer_SGN(net, test_loader)
         sgn_runtime = time.time() - sgn_start_time
         results = list(tqdm.tqdm(pool.imap(solve_LKH, [("NeuroLKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials, None, candidate_dir, candidate[i], n_nodes_extend[i]) for i in range(len(dataset))]), total=len(dataset)))
     else:

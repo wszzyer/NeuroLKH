@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from net.sgcn_layers import SparseGCNLayer, MLP
+from utils import get_problem_default_node_feat_dim
 
 def loss_edges(y_pred_edges, y_edges, edge_cw):
     y_pred_edges = y_pred_edges.permute(0, 2, 1)  # batch_size x 2 x n_node * n_edge
@@ -10,18 +11,9 @@ def loss_edges(y_pred_edges, y_edges, edge_cw):
     return loss_edges
 
 class SparseGCNModel(nn.Module):
-    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp", edge_dim=1):
+    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp", node_extra_dim=0, edge_dim=1):
         super(SparseGCNModel, self).__init__()
-        if problem == "tsp":
-            self.node_dim = 2 # x, y
-        elif problem == "cvrp":
-            self.node_dim = 4 # x, y, demand, capacity
-        elif problem == "pdp":
-            self.node_dim = 5 # x, y, depot, pickup, delivery
-        elif problem == "cvrptw":
-            self.node_dim = 6 # x, y, demand, start_time, end_time, capacity
-        else:
-            assert False
+        self.node_dim = get_problem_default_node_feat_dim(problem) + node_extra_dim
         self.edge_dim = edge_dim
         self.hidden_dim = hidden_dim
         self.n_gcn_layers = n_gcn_layers
@@ -29,8 +21,8 @@ class SparseGCNModel(nn.Module):
         self.aggregation = "mean"
         self.problem = problem
 
-        self.nodes_batchnorm = nn.BatchNorm1d(affine=False)
-        self.edges_batchnorm = nn.BatchNorm1d(affine=False)
+        self.nodes_batchnorm = nn.BatchNorm1d(self.node_dim, affine=False)
+        self.edges_batchnorm = nn.BatchNorm1d(self.edge_dim, affine=False)
         self.nodes_embedding = nn.Linear(self.node_dim, self.hidden_dim, bias=False)
         self.edges_embedding = nn.Linear(self.edge_dim, self.hidden_dim, bias=False)
         gcn_layers = []
@@ -46,7 +38,7 @@ class SparseGCNModel(nn.Module):
     def forward(self, x_nodes, x_edges, edge_index, inverse_edge_index, y_edges, edge_cw, n_edges):
         # note that you must use model.eval() during evaluation phase, because of BatchNorm
         x_nodes = self.nodes_batchnorm(x_nodes.transpose(-1, -2)).transpose(-1, -2)
-        y_edges = self.edges_batchnorm(x_edges.transpose(-1, -2)).transpose(-1, -2)
+        x_edges = self.edges_batchnorm(x_edges.transpose(-1, -2)).transpose(-1, -2)
         batch_size, num_nodes, _ = x_nodes.size()
         x = self.nodes_embedding(x_nodes)  # batch_size x n_node x hidden_dimension
         e = self.edges_embedding(x_edges)  # batch_size x n_node * n_edge x hidden_dimension

@@ -40,16 +40,18 @@ if __name__ == "__main__":
 
     N_EDGES = 20
     MAGIC = 16
-    used_feats = parse_feat_strs(args.use_feats)
-    print(f"Using feats: {args.use_feats}")
-    net = SparseGCNModel(problem=args.problem, edge_dim=len(used_feats))
+
+    node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
+    net = SparseGCNModel(problem=args.problem.lower(), 
+                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats)),
+                         edge_dim=sum(map(lambda cls:cls.size, edge_feats)))
     net.to(args.device)
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    train_dataset = LaDeDataset(file_path=args.file_path, used_feats=used_feats, problem=args.problem)
-    val_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem=args.problem)
+    train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem.lower())
+    val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem.lower())
 
     start_epoch  = 0
     best_loss = 1e7
@@ -85,7 +87,7 @@ if __name__ == "__main__":
             else:
                 assert args.problem == "cvrptw"
                 y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
-                loss_edges = loss_edges1.mean() + loss_edges2.mean()
+                loss_edges = (loss_edges1.mean() + loss_edges2.mean())/2
 
             n_nodes = node_feat.size(1)
             loss = loss_edges
@@ -95,11 +97,12 @@ if __name__ == "__main__":
             optimizer.step()
             optimizer.zero_grad()
 
-            # y_edges = y_edges.detach().cpu().numpy()
-            # label = label.cpu().numpy()
-            # rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-            # rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
-            # rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+            if args.problem == "cvrp":
+                y_edges = y_edges.detach().cpu().numpy()
+                label = label.cpu().numpy()
+                rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
+                rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+                rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
             
             pbar.set_postfix({"train_loss": loss_edges.item()})
         scheduler.step()
@@ -129,12 +132,13 @@ if __name__ == "__main__":
                         assert args.problem == "cvrptw"
                         y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
                         loss_edges = loss_edges1.mean() + loss_edges2.mean()
-
-                    # y_edges = y_edges.detach().cpu().numpy()
-                    # label = label.cpu().numpy()
-                    # rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-                    # rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
-                    # dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
+                    
+                    if args.problem == "cvrp":
+                        y_edges = y_edges.detach().cpu().numpy()
+                        label = label.cpu().numpy()
+                        rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
+                        rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+                        dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
                     statistics["loss_val"].append(loss_edges.detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
             eval_results.append(np.mean(dataset_rank) + 1)
