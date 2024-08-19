@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from net.sgcn_layers import SparseGCNLayer, MLP
+from utils import get_problem_default_node_feat_dim
 
 def loss_edges(y_pred_edges, y_edges, edge_cw):
     y_pred_edges = y_pred_edges.permute(0, 2, 1)  # batch_size x 2 x n_node * n_edge
@@ -10,18 +11,9 @@ def loss_edges(y_pred_edges, y_edges, edge_cw):
     return loss_edges
 
 class SparseGCNModel(nn.Module):
-    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp", edge_dim=1):
+    def __init__(self, hidden_dim=128, n_gcn_layers=30, n_mlp_layers=3, problem="tsp", node_extra_dim=0, edge_dim=1):
         super(SparseGCNModel, self).__init__()
-        if problem == "tsp":
-            self.node_dim = 2 # x, y
-        elif problem == "cvrp":
-            self.node_dim = 4 # x, y, demand, capacity
-        elif problem == "pdp":
-            self.node_dim = 5 # x, y, depot, pickup, delivery
-        elif problem == "cvrptw":
-            self.node_dim = 6 # x, y, demand, start_time, end_time, capacity
-        else:
-            assert False
+        self.node_dim = get_problem_default_node_feat_dim(problem) + node_extra_dim
         self.edge_dim = edge_dim
         self.hidden_dim = hidden_dim
         self.n_gcn_layers = n_gcn_layers

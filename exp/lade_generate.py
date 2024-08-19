@@ -232,7 +232,14 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     x = np.stack([d["COORD"] for d in dataset])
     x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
     # coords needs scale for faster training.
-    node_feat = np.concatenate([x, demand[:, :, None], capacity[:, :, None]], -1)
+    node_feat_list = [x, demand[:, :, None], capacity[:, :, None]]
+    for feat_class in FEATS:
+        if feat_class.feat_type != "node":
+            continue
+        feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
+        # Pad with zeros by default. This may cause problems on other features so take care.
+        node_feat_list.append(np.concatenate([feat, np.zeros((feat.shape[0], max_nodes - n_nodes, feat.shape[2]))], axis=1))
+    node_feat = np.concatenate(node_feat_list, -1)
     
     # construct edge features.
     # dummy_mat is matrix with duplicated depot nodes.

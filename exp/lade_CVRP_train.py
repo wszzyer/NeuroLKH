@@ -39,16 +39,17 @@ if __name__ == "__main__":
 
     N_EDGES = 20
     MAGIC = 16
-    used_feats = parse_feat_strs(args.use_feats)
-    print(f"Using feats: {args.use_feats}")
-    net = SparseGCNModel(problem="cvrp", edge_dim=len(used_feats))
+    node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
+    net = SparseGCNModel(problem="cvrp", 
+                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats)),
+                         edge_dim=sum(map(lambda cls:cls.size, edge_feats)))
     net.to(args.device)
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    train_dataset = LaDeDataset(file_path=args.file_path, used_feats=used_feats, problem="cvrp")
-    val_dataset = LaDeDataset(file_path=args.eval_file_path, used_feats=used_feats, problem="cvrp")
+    train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem="cvrp")
+    val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem="cvrp")
 
     start_epoch  = 0
     best_loss = 1e7

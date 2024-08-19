@@ -35,3 +35,15 @@ def calc_distmat(net, care_nodes, gdf_nodes):
                 distmat[u_i][v_i] = distvec[v]
     
     return distmat
+
+def get_problem_default_node_feat_dim(problem: str) -> int:
+    if problem == "tsp":
+        return 2 # x, y
+    elif problem == "cvrp":
+        return 4 # x, y, demand, capacity
+    elif problem == "pdp":
+        return 5 # x, y, depot, pickup, delivery
+    elif problem == "cvrptw":
+        return 6 # x, y, demand, start_time, end_time, capacity
+    else:
+        assert RuntimeError(f"Fail to recognize problem type {problem}")

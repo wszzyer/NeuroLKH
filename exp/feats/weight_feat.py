@@ -7,6 +7,7 @@ from utils import calc_distmat
 
 class SSSPFeat(NeuralLKHFeat):
     feat_type = "edge"
+    size = 1
 
     @classmethod
     def generate_problem_meta(cls, rdf, graph: MultiDiGraph, gdf_nodes: GeoDataFrame) -> Any:
