@@ -70,7 +70,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     
     with open(dataset_filename, "rb") as f:
         dataset = pickle.load(f)
-    print(dataset.keys())
+    print(dataset[0].keys())
     n_nodes = len(dataset[0]["COORD"]) # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
         
     if method == "NeuroLKH":
@@ -86,7 +86,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         max_nodes = int(n_nodes * max_extra_nodes_ratio)
         n_samples = len(dataset)
         n_neighbours = 20
-        feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset)))
+        feats = list(tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset)))
         edge_index, n_nodes_extend, feat_runtime = list(zip(*feats))
         feat_runtime = np.sum(feat_runtime)
         feat_start_time = time.time()
@@ -145,12 +145,12 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         with torch.no_grad():
             candidate = infer_SGN(net, test_loader)
         sgn_runtime = time.time() - sgn_start_time
-        results = list(tqdm.tqdm(pool.imap(solve_LKH, [("NeuroLKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials, None, candidate_dir, candidate[i], n_nodes_extend[i]) for i in range(len(dataset))]), total=len(dataset)))
+        results = list(tqdm(pool.imap(solve_LKH, [("NeuroLKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials, None, candidate_dir, candidate[i], n_nodes_extend[i]) for i in range(len(dataset))]), total=len(dataset)))
     else:
         assert method == "LKH"
         feat_runtime = 0
         sgn_runtime = 0
-        results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
+        results = list(tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials) for i in range(len(dataset))]), total=len(dataset), desc='Acquiring LKH Result'))
     results = np.array(results)
     dataset_objs = results[:, 0, :].mean(0)
     dataset_penalties = results[:, 1, :].mean(0)

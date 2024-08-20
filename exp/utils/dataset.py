@@ -19,9 +19,11 @@ class LaDeDataset(Dataset):
         if extra_node_feats:
             self.dataset["node_feat"] = np.concatenate([self.dataset["node_feat"][..., :default_node_dim],
                                                         self.dataset["node_feat"][..., default_node_dim + np.concatenate([get_feat_indexes(feat) for feat in extra_node_feats])]], axis=-1)
-        if edge_feats:
-            self.dataset["edge_feat"] = self.dataset["edge_feat"][..., np.concatenate([get_feat_indexes(feat) for feat in edge_feats])]
-
+        else:
+            self.dataset["node_feat"] = self.dataset["node_feat"][..., :default_node_dim]
+        assert edge_feats, "must have at least one edge feat."
+        self.dataset["edge_feat"] = self.dataset["edge_feat"][..., np.concatenate([get_feat_indexes(feat) for feat in edge_feats])]
+        
         if self.problem == "pdp" or self.problem == "cvrptw":
             self.key_list = ["node_feat", "edge_feat", "label1", "label2", "edge_index", "inverse_edge_index"]
         elif self.problem == "cvrp":

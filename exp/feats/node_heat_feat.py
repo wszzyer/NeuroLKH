@@ -11,9 +11,7 @@ class NodeHeatFeat(NeuralLKHFeat):
     
     @classmethod
     def generate_problem_meta(cls, rdf, graph: MultiDiGraph, gdf_nodes: GeoDataFrame):
-        # TODO
-        # 1. accept_gps_lng/accept_gps_lat 数据好像是乱的，烟台是这样
-        # 2. 真实场景下无法提前知道 accept_gps_lat/accept_gps_lng
+        # TODO accept_gps_lng/accept_gps_lat 数据好像是乱的，烟台是这样
         rdf.fillna(rdf[["accept_gps_lat", "accept_gps_lng"]].mean(), inplace=True)
         accept = transform_crs(zip(rdf.accept_gps_lat, rdf.accept_gps_lng), SOURCE_CRS, TARGET_CRS)
         delivery = transform_crs(zip(rdf.lat, rdf.lng), SOURCE_CRS, TARGET_CRS)

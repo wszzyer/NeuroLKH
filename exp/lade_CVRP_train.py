@@ -131,7 +131,7 @@ if __name__ == "__main__":
                     else:
                         assert args.problem == "cvrptw"
                         y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
-                        loss_edges = loss_edges1.mean() + loss_edges2.mean()
+                        loss_edges = (loss_edges1.mean() + loss_edges2.mean())/2
                     
                     if args.problem == "cvrp":
                         y_edges = y_edges.detach().cpu().numpy()
