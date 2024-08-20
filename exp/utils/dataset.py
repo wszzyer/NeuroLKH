@@ -19,8 +19,12 @@ class LaDeDataset(Dataset):
         if extra_node_feats:
             self.dataset["node_feat"] = np.concatenate([self.dataset["node_feat"][..., :default_node_dim],
                                                         self.dataset["node_feat"][..., default_node_dim + np.concatenate([get_feat_indexes(feat) for feat in extra_node_feats])]], axis=-1)
+        else:
+            self.dataset["node_feat"] = self.dataset["node_feat"][..., :default_node_dim]
         if edge_feats:
             self.dataset["edge_feat"] = self.dataset["edge_feat"][..., np.concatenate([get_feat_indexes(feat) for feat in edge_feats])]
+        else:
+            raise RuntimeError("At least one edge feat must be enabled.")
 
         if self.problem == "pdp" or self.problem == "cvrptw":
             self.key_list = ["node_feat", "edge_feat", "label1", "label2", "edge_index", "inverse_edge_index"]
@@ -65,8 +69,12 @@ class LaDeTestDataset(Dataset):
         if extra_node_feats_class:
             node_feat = np.concatenate([node_feat[..., :default_node_dim], 
                                         node_feat[..., default_node_dim + np.concatenate([get_feat_indexes(feat) for feat in extra_node_feats_class])]], axis=-1)
+        else:
+            node_feat = node_feat[..., default_node_dim]
         if edge_feats_class:
            edge_feat = edge_feat[..., np.concatenate([get_feat_indexes(feat) for feat in edge_feats_class])]
+        else:
+            raise RuntimeError("At least one edge feat must be enabled.")
         self.node_feat = torch.tensor(node_feat, dtype=torch.float32)
         self.edge_feat = torch.tensor(edge_feat, dtype=torch.float32).flatten(1, -2) # B x 20N x feat_num
         self.edge_index = torch.tensor(edge_index, dtype=torch.long).flatten(1) # B x 1000
