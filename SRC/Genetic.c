@@ -1,6 +1,16 @@
 #include "LKH.h"
 #include "Genetic.h"
 
+int MaxPopulationSize; /* The maximum size of the population */ 
+int PopulationSize;    /* The current size of the population */
+
+CrossoverFunction Crossover;
+
+int **Population;      /* Array of individuals (solution tours) */
+GainType *PenaltyFitness;  /* The fitnesslty  (tour penalty) of each
+                          individual */
+GainType *Fitness;     /* The fitness (tour cost) of each individual */
+
 /*
  * The AddToPopulation function adds the current tour as an individual to 
  * the population. The fitness of the individual is set equal to the cost

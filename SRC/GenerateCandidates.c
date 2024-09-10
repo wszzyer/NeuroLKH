@@ -127,9 +127,9 @@ void GenerateCandidates(int MaxCandidates, GainType MaxAlpha,
                     }
                 }
             }
-	    if (CandidateFiles != 0 && ProblemType == TSP) {
-	        SavedD[From->Id * Dimension - Dimension + To->Id - 1] = d;
-	    }
+            if (CandidateFiles != 0 && ProblemType == TSP) {
+                SavedD[From->Id * Dimension - Dimension + To->Id - 1] = d;
+            }
             if (a <= MaxAlpha && IsPossibleCandidate(From, To)) {
                 /* Insert new candidate edge in From->CandidateSet */
                 NN = NFrom;

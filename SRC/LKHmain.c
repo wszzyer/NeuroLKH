@@ -6,6 +6,9 @@
  * This file contains the main function of the program.
  */
 
+int *SavedD;
+MergeTourFunction MergeWithTour;
+
 int main(int argc, char *argv[])
 {
     GainType Cost, OldOptimum;
@@ -61,12 +64,12 @@ int main(int argc, char *argv[])
 	assert (Subgradient == 0);
     }
     if (CandidateFiles != 0)
-	SavedD = malloc(Dimension * Dimension * sizeof(int));
-    CreateCandidateSet();
-    InitializeStatistics();
-    if (CandidateFiles != 0) {
-	FreeCandidateSets();
-	ReadCandidates(5);
+	    SavedD = malloc(Dimension * Dimension * sizeof(int));
+        CreateCandidateSet();
+        InitializeStatistics();
+        if (CandidateFiles != 0) {
+        FreeCandidateSets();
+        ReadCandidates(5);
     }
     if (Norm != 0 || Penalty) {
         Norm = 9999;

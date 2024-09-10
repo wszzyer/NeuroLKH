@@ -17,6 +17,16 @@
  *     BETWEEN(t[p[i-1]], t[p[i]], t[p[i+1]]) for i = 2, ..., 2k-1
  */
 
+Node **t;
+Node **T;
+Node **tSaved;
+int *p;
+int *q;
+int *incl;
+int *cycle;
+GainType *G;
+int K;
+
 static Node *tp1;
 
 static int compare(const void *pa, const void *pb)

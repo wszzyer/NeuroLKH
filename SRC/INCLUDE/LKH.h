@@ -73,7 +73,7 @@ typedef Node *(*MoveFunction) (Node * t1, Node * t2, GainType * G0,
 typedef int (*CostFunction) (Node * Na, Node * Nb);
 typedef GainType (*PenaltyFunction) (void);
 typedef GainType (*MergeTourFunction) (void);
-MergeTourFunction MergeWithTour;
+extern MergeTourFunction MergeWithTour;
 
 /* The Node structure is used to represent nodes (cities) of the problem */
 
@@ -357,8 +357,8 @@ extern int TraceLevel; /* Specifies the level of detail of the output
 extern int Trial;      /* Ordinal number of the current trial */
 extern GainType TSPTW_CurrentMakespanCost;
 extern int TSPTW_Makespan;
-int *SavedD;
-int GeneratingFeature;
+extern int *SavedD;
+extern int GeneratingFeature;
 
 /* The following variables are read by the functions ReadParameters and 
    ReadProblem: */

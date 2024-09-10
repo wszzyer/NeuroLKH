@@ -15,6 +15,8 @@
  * The CreateCandidateSet function itself is called from LKHmain.
  */
 
+int GeneratingFeature;
+
 void CreateCandidateSet()
 {
     GainType Cost, MaxAlpha, A;
@@ -45,9 +47,9 @@ void CreateCandidateSet()
     if (TraceLevel >= 2)
         printff("Creating candidates ...\n");
     if (GeneratingFeature) {
-	CreateNearestNeighborCandidateSet(MaxCandidates);
-	AddTourCandidates();
-	goto End_CreateCandidateSet;
+        CreateNearestNeighborCandidateSet(MaxCandidates);
+        AddTourCandidates();
+        goto End_CreateCandidateSet;
     }
     if (MaxCandidates > 0 &&
         (CandidateSetType == QUADRANT || CandidateSetType == NN)) {
@@ -91,7 +93,7 @@ void CreateCandidateSet()
             SymmetrizeCandidateSet();
         goto End_CreateCandidateSet;
     } else {
-	ReadPenalties();
+	    ReadPenalties();
         if (CandidateSetType != DELAUNAY &&
             CandidateSetType != POPMUSIC &&
             MaxCandidates > 0) {

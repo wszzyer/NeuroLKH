@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include "LKH.h"
+#include "GainType.h"
 
 #define new_int(n) ((int *) calloc(n, sizeof(int)))
 #define new_tour(n) ((tour *) calloc(n, sizeof(tour)))
@@ -52,13 +54,13 @@ void fusionB_v2(int *sol_blue, int *sol_red);
 GainType off_gen(int *sol_blue, int *sol_red, int *offspring,
                  int *label_list);
 
-int n_cities, n_cand;
-int n_partitions_size2, n_partitions_before_fusion,
+extern int n_cities, n_cand;
+extern int n_partitions_size2, n_partitions_before_fusion,
 n_partitions_after_fusion1, n_partitions_after_fusion2,
 n_partitions_after_fusion3;
-int n_partitions_after_fusion4, n_partitions_after_fusion5,
+extern int n_partitions_after_fusion4, n_partitions_after_fusion5,
 n_partitions_after_fusionB;
-Node **Map2Node;
+extern Node **Map2Node;
 
 int *alloc_vectori(int lines);
 int **alloc_matrixi(int lines, int collums);
