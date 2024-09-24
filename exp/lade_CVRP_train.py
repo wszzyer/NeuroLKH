@@ -26,7 +26,9 @@ def get_args():
     parser.add_argument('--save_dir', type=str, default="saved/exp1/", help='')
     parser.add_argument('--load_pt', type=str, default="", help='')
     parser.add_argument('--device', type=str, default="cuda:0", help='')
-    parser.add_argument('--early_stop_thres', type=int, default=20)
+    parser.add_argument('--early_stop_thres', type=int, default=15)
+    parser.add_argument('--ramuda', type=float, default=0.02)
+    parser.add_argument('--l_a', type=float, default=0.15)
     parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
     return parser.parse_args()
 
@@ -42,7 +44,8 @@ if __name__ == "__main__":
     MAGIC = 16
 
     node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
-    net = SparseGCNModel(problem=args.problem.lower(), 
+    net = SparseGCNModel(problem=args.problem.lower(),
+                         n_mlp_layers=4,
                          node_extra_dim=sum(map(lambda cls:cls.size, node_feats)),
                          edge_dim=sum(map(lambda cls:cls.size, edge_feats)))
     net.to(args.device)
@@ -52,6 +55,7 @@ if __name__ == "__main__":
 
     train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem.lower())
     val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem.lower())
+    alpha_loss = torch.nn.CrossEntropyLoss()
 
     start_epoch  = 0
     best_loss = 1e7
@@ -76,18 +80,22 @@ if __name__ == "__main__":
         pbar = tqdm(DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=train_dataset.collate_fn))
         for index, batch in enumerate(pbar):
             if args.problem == "cvrp":
-                node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
+                node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), batch)
             else:
                 assert args.problem == "cvrptw"
-                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), batch)
+                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), batch)
             batch_size = node_feat.shape[0]
             if args.problem == "cvrp":
-                y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-                loss_edges = loss_edges.mean()
+                y_edges, loss_edges, reg_loss,  y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
+                logsoft_y_edges = y_edges[:, :, 1].squeeze().reshape(batch_size, -1, N_EDGES)
+                alpha_prob = alpha_values.max(dim=-1, keepdim=True)[0] * 1.2 - alpha_values + 1
+                alpha_prob = (alpha_prob / alpha_prob.sum(dim=-1, keepdim=True)).detach()
+                loss_edges = loss_edges.mean() + args.ramuda * reg_loss.mean() + args.l_a * alpha_loss(logsoft_y_edges, alpha_prob).mean()
             else:
                 assert args.problem == "cvrptw"
                 y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
                 loss_edges = (loss_edges1.mean() + loss_edges2.mean())/2
+                raise RuntimeError
 
             n_nodes = node_feat.size(1)
             loss = loss_edges
@@ -116,18 +124,21 @@ if __name__ == "__main__":
 
             for val_batch in DataLoader(val_dataset, batch_size=args.eval_batch_size, collate_fn=val_dataset.collate_fn):
                 if args.problem == "cvrp":
-                    node_feat, edge_feat, label, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
+                    node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), val_batch)
                 else:
                     assert args.problem == "cvrptw"
-                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
+                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), val_batch)
 
                 with torch.no_grad():
                     batch_size = node_feat.shape[0]
                     n_nodes = node_feat.size(1)
 
                     if args.problem == "cvrp":
-                        y_edges, loss_edges, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-                        loss_edges = loss_edges.mean()
+                        y_edges, loss_edges, reg_loss, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
+                        logsoft_y_edges = y_edges[:, :, 1].squeeze().reshape(batch_size, -1, N_EDGES)
+                        alpha_prob = alpha_values.max(dim=-1, keepdim=True)[0] * 1.2 - alpha_values + 1
+                        alpha_prob = (alpha_prob / alpha_prob.sum(dim=-1, keepdim=True)).detach()
+                        loss_edges = loss_edges.mean() + args.ramuda * reg_loss.mean() + args.l_a * alpha_loss(logsoft_y_edges, alpha_prob).mean()
                     else:
                         assert args.problem == "cvrptw"
                         y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)

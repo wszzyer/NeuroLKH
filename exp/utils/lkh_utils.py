@@ -31,7 +31,11 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
                 f.write(f"{i+1} {tw_begin} {tw_end}\n")
         f.write("EOF\n")
 
-def write_para(feat_filename, instance_filename, method, para_filename, max_trials=1000, seed=1234):
+def write_para(feat_filename, instance_filename, method, para_filename, candidate_set_type="nn", max_trials=1000, seed=1234):
+    candidate_type_map = {
+        "nn": "NEAREST-NEIGHBOR",
+        "alpha": "ALPHA"
+    }
     with open(para_filename, "w") as f:
         f.write("PROBLEM_FILE = " + instance_filename + "\n")
         f.write("PRECISION = 1\n")
@@ -44,13 +48,20 @@ def write_para(feat_filename, instance_filename, method, para_filename, max_tria
             if os.path.exists(feat_filename):
                 os.remove(feat_filename)
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-            f.write("CANDIDATE_SET_TYPE = NEAREST-NEIGHBOR\n")
+            f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
             f.write("MAX_CANDIDATES = 20\n")
         elif method == "NeuroLKH":
+            if os.path.exists(feat_filename):
+                os.remove(feat_filename)
             f.write("SUBGRADIENT = NO\n")
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
         else:
             assert method == "LKH"
+            if feat_filename:
+                if os.path.exists(feat_filename):
+                    os.remove(feat_filename)
+                f.write("CANDIDATE_FILE = " + feat_filename + "\n")
+                f.write("MAX_CANDIDATES = 20\n")
             
 def read_feat(feat_filename, max_nodes):
     n_neighbours = 20
@@ -68,12 +79,20 @@ def read_feat(feat_filename, max_nodes):
     feat_runtime = float(lines[-2].strip())
     return edge_index, n_nodes_extend, feat_runtime
 
-def read_results(log_filename, max_trials):
+def read_results(log_filename, feat_filename, max_trials):
     with open(log_filename, "r") as f:
         line = f.readlines()[-1]
         line = line.strip().split(" ")
         result = [int(_) for _ in line]
-    return result
+    alpha_lists = []
+    with open(feat_filename, "r") as f:
+        n_nodes_extend = int(f.readline().strip())
+        for _ in range(n_nodes_extend):
+            parts = list(map(int.__call__, f.readline().strip().split()))
+            edge_count = parts[2]
+            alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
+            assert len(alpha_lists[-1]) == edge_count
+    return result, alpha_lists
 
 def write_candidate(feat_filename, candidate, n_nodes_extend):
     n_node = candidate.shape[0]

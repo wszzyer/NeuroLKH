@@ -30,10 +30,10 @@ class SparseGCNModel(nn.Module):
             gcn_layers.append(SparseGCNLayer(self.hidden_dim, self.aggregation, is_pdp=problem=="pdp"))
         self.gcn_layers = nn.ModuleList(gcn_layers)
         if problem == "pdp" or problem == "cvrptw":
-            self.mlp_edges = MLP(self.hidden_dim, 2, self.n_mlp_layers)
+            self.mlp_edges = MLP(self.hidden_dim, self.hidden_dim * 2, 2, self.n_mlp_layers)
         else:
-            self.mlp_edges = MLP(self.hidden_dim, 1, self.n_mlp_layers)
-        self.mlp_nodes = MLP(self.hidden_dim, 1, self.n_mlp_layers)
+            self.mlp_edges = MLP(self.hidden_dim, self.hidden_dim * 2, 1, self.n_mlp_layers)
+        self.mlp_nodes = MLP(self.hidden_dim, self.hidden_dim * 2, 1, self.n_mlp_layers)
 
     def forward(self, x_nodes, x_edges, edge_index, inverse_edge_index, y_edges, edge_cw, n_edges):
         # note that you must use model.eval() during evaluation phase, because of BatchNorm
@@ -47,6 +47,7 @@ class SparseGCNModel(nn.Module):
         for layer in range(self.n_gcn_layers):
             x, e = self.gcn_layers[layer](x, e, edge_index, inverse_edge_index, n_edges)
         y_pred_edges = self.mlp_edges(e).view(batch_size, num_nodes, n_edges)
+        reg_loss = torch.linalg.vector_norm(y_pred_edges, dim=(1, 2))
         y_pred_edges = torch.nn.functional.softmax(y_pred_edges, dim=-1)
         
         y_pred_edges = y_pred_edges.view(batch_size, num_nodes * n_edges, 1)
@@ -60,7 +61,7 @@ class SparseGCNModel(nn.Module):
 
         y_pred_nodes = self.mlp_nodes(x)
         y_pred_nodes = 10 * torch.tanh(y_pred_nodes)
-        return y_pred_edges, loss, y_pred_nodes
+        return y_pred_edges, loss, reg_loss, y_pred_nodes
 
     def forward_finetune(self, x_nodes, x_edges, edge_index, inverse_edge_index, n_edges):
         with torch.no_grad():

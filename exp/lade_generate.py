@@ -46,17 +46,18 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     para_filename = os.path.join(param_dir, instance_name + ".para")
     log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
     instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
-    candidate_filename = os.path.join(candidate_dir, instance_name + ".txt") if candidate_dir else None
+    candidate_type = "nn" if task == "FeatGenerate" else "alpha"
+    candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
     if rerun or not os.path.isfile(log_filename):
         write_instance(instance, instance_name, instance_filename, N_NODES)
-        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials)
+        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, candidate_set_type=candidate_type)
         if candidate is not None:
             write_candidate(candidate_filename, candidate, n_nodes_extend)
         f = open(log_filename, "w") if log_filename else DEVNULL
         check_call(["./LKH", para_filename], stdout=f)
     
     if task == "LKH" or task == "NeuroLKH":
-        return result_hook(log_filename, max_trials)
+        return result_hook(log_filename, candidate_filename, max_trials)
     else:
         assert task == "FeatGenerate"
         return result_hook(candidate_filename, max_nodes)
@@ -185,7 +186,7 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     
     if generate_candidate_by_LKH:
         # dummy_mat is matrix with duplicated depot nodes.
-        feats = list(tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat'))
+        feats = tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat')
         edge_index, n_nodes_extend, _ = list(zip(*feats))
         edge_index = np.concatenate(edge_index, 0)
     else:
@@ -193,12 +194,36 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         dist = np.stack([instance["ATTACHMENT"][SSSPFeat] for instance in dataset])
         edge_index = np.argsort(dist, -1)[:, :, 1:1 + n_neighbours]
 
+    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000, None, feat_dir) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    if not allow_extend_nodes:
+        results = np.array(results)
+        results[results > n_nodes] = 0
+
+    # Rewrite edge_index via alpha and take record of alpha values
+    alpha_values = np.zeros_like(edge_index)
+    for problem_index, problem_alpha in enumerate(alpha_raw):
+        for index, alpha_list in enumerate(problem_alpha):
+            nn_list = list(edge_index[problem_index][index])
+            assert len(nn_list) == n_neighbours
+            cur = 0
+            for target, alpha in alpha_list:
+                if target in nn_list:
+                    nn_list.remove(target)
+                edge_index[problem_index][index][cur] = target
+                alpha_values[problem_index][index][cur] = alpha
+                cur += 1
+            max_alpha = alpha_list[-1][1] # The alpha list is alread sort
+            while cur < n_neighbours:
+                edge_index[problem_index][index][cur] = nn_list.pop(0)
+                alpha_values[problem_index][index][cur] = int(max_alpha * 1.2) # An arbritary penalty
+                cur += 1
     edge_feat_list = []
     for feat_class in FEATS:
         if feat_class.feat_type != "edge":
             continue
         feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
         dummy_mat = np.zeros((feat.shape[0], max_nodes, max_nodes), dtype=int)
+        # If no feat is generated for those extended nodes, set them the same as node 0.
         dummy_mat[:, :feat.shape[1], :feat.shape[1]] = feat
         dummy_mat[:, feat.shape[1]:, :] = dummy_mat[:, :1, :]
         dummy_mat[:, :, feat.shape[1]:] = dummy_mat[:, :, :1]
@@ -210,11 +235,6 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     # construct edge label.
-    results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
-    if not allow_extend_nodes:
-        results = np.array(results)
-        results[results > n_nodes] = 0
-    
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     for i in range(n_samples):
@@ -231,7 +251,8 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         "node_feat":node_feat,
         "edge_feat":edge_feat,
         "edge_index":edge_index,
-        "inverse_edge_index":inverse_edge_index
+        "inverse_edge_index":inverse_edge_index,
+        "alpha_values": alpha_values
     }
     if not split_edge_label:
         feat["label"] = label

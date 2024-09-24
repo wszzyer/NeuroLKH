@@ -84,7 +84,7 @@ void CreateCandidateSet(double* invec)
         CandidatesRead = ReadCandidates(MaxCandidates, 0) ||
             ReadEdges(MaxCandidates);
 
-	Cost = Ascent(invec);
+	    Cost = Ascent(invec);
         if (Subgradient && SubproblemSize == 0) {
             WritePenalties();
             PiFile = 0;
@@ -96,7 +96,7 @@ void CreateCandidateSet(double* invec)
             SymmetrizeCandidateSet();
         goto End_CreateCandidateSet;
     } else {
-	ReadPenalties(invec);
+	    ReadPenalties(invec);
         if (CandidateSetType != DELAUNAY &&
             CandidateSetType != POPMUSIC &&
             MaxCandidates > 0) {

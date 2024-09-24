@@ -31,7 +31,6 @@ class SpaceSyntaxFeat(NeuralLKHFeat):
             tasks = [gdf_nodes.iloc[i * chunck_size: (i+1) * chunck_size].copy() for i in range(num_cpus)]
             results = list(pool.imap(calc_space_syntax, zip(tasks, cycle([radius]))))
             ss_df = pd.concat(results, axis=0)
-        
         return ss_df.values.astype(float)
     
     @classmethod

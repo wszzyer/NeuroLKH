@@ -10,6 +10,7 @@ import argparse
 import time
 from utils.dataset import LaDeTestDataset
 from torch.utils.data import DataLoader
+from functools import partial
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -20,6 +21,8 @@ def get_args():
     parser.add_argument('--neurolkh_trials', type=int, default=1000, help='')
     parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool")
     parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
+    parser.add_argument('--device', type=str, default="cuda:0", help='')
+    parser.add_argument('--output', type=str, default='', help='')
     return parser.parse_args()
 
 from feats import get_all_feats, parse_feat_strs
@@ -31,17 +34,18 @@ def infer_SGN(net, test_loader):
     candidate = []
     for batch in tqdm(test_loader, desc="infer SGN"):
         node_feat, edge_feat, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
-        y_edges, _, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, 20)
+        batch_size = node_feat.shape[0]
+        y_edges, _, _, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, 20)
         y_edges = y_edges.detach().cpu().numpy()
-        y_edges = y_edges[:, :, 1].reshape(len(batch), node_feat.shape[1], 20)
+        y_edges = y_edges[:, :, 1].reshape(batch_size, node_feat.shape[1], 20)
         y_edges = np.argsort(-y_edges, -1)
         edge_index = edge_index.cpu().numpy().reshape(-1, y_edges.shape[1], 20)
-        candidate_index = edge_index[np.arange(len(batch)).reshape(-1, 1, 1), np.arange(y_edges.shape[1]).reshape(1, -1, 1), y_edges]
+        candidate_index = edge_index[np.arange(batch_size).reshape(-1, 1, 1), np.arange(y_edges.shape[1]).reshape(1, -1, 1), y_edges]
         candidate.append(candidate_index[:, :, :5])
     candidate = np.concatenate(candidate, 0)
     return candidate
 
-def read_results(log_filename, max_trials):
+def read_results(log_filename, _, max_trials):
     objs = []
     penalties = []
     runtimes = []
@@ -86,7 +90,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         max_nodes = int(n_nodes * max_extra_nodes_ratio)
         n_samples = len(dataset)
         n_neighbours = 20
-        feats = list(tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset)))
+        feats = tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset))
         edge_index, n_nodes_extend, feat_runtime = list(zip(*feats))
         feat_runtime = np.sum(feat_runtime)
         feat_start_time = time.time()
@@ -131,17 +135,18 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         feat_runtime += time.time() - feat_start_time
 
         node_feats_cls, edge_feats_cls = parse_feat_strs(args.use_feats,  print_result=True)
-        net = SparseGCNModel(problem="cvrp", 
+        net = SparseGCNModel(problem="cvrp",
+                         n_mlp_layers=4,
                          node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)),
                          edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)))
-        net.cuda()
-        saved = torch.load(args.model_path)
+        net.to(args.device)
+        saved = torch.load(args.model_path, weights_only=True)
         net.load_state_dict(saved)
         sgn_start_time = time.time()
         
         test_dataset = LaDeTestDataset("cvrp", node_feat, edge_feat, edge_index, inverse_edge_index, node_feats_cls, edge_feats_cls)
         assert test_dataset.size % args.batch_size == 0
-        test_loader = DataLoader(test_dataset, batch_size = args.batch_size)
+        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
         with torch.no_grad():
             candidate = infer_SGN(net, test_loader)
         sgn_runtime = time.time() - sgn_start_time
@@ -165,21 +170,33 @@ if __name__ == "__main__":
     neurolkh_objs, neurolkh_penalties, neurolkh_runtimes, feat_runtime, sgn_runtime = eval_dataset(args.file_path, "NeuroLKH", args=args, rerun=True, max_trials=args.neurolkh_trials) 
     lkh_objs, lkh_penalties, lkh_runtimes, _, _ = eval_dataset(args.file_path, "LKH", args=args, rerun=True, max_trials=args.lkh_trials)
 
-    print ("generating features runtime: %.1fs SGN inferring runtime: %.1fs" % (feat_runtime, sgn_runtime))
-    print ("method obj penalties runtime")
+    if args.output:
+        file = open(args.output, mode='w') # Throw error upon illegal output parameter
+    else:
+        file = None
+    printf = partial(print, file=file)
+
+    printf ("generating features runtime: %.1fs SGN inferring runtime: %.1fs" % (feat_runtime, sgn_runtime))
+    printf ("method obj penalties runtime")
     trials = 1
     while trials <= lkh_objs.shape[0]:
-        print ("------experiments of trials: %d ------" % (trials))
-        print ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
-        print ("NeuroLKH %d %d %ds" % (neurolkh_objs[trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[trials - 1] + feat_runtime + sgn_runtime))
+        printf ("------experiments of trials: %d ------" % (trials))
+        printf ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
+        printf ("NeuroLKH %d %d %ds" % (neurolkh_objs[trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[trials - 1] + feat_runtime + sgn_runtime))
         trials *= 10
-    print ("------comparison with same time limit------")
+    printf ("------comparison with same time limit------")
     trials = 1
     while trials <= lkh_objs.shape[0]:
-        print ("------experiments of trials: %d ------" % (trials))
-        print ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
+        printf ("------experiments of trials: %d ------" % (trials))
+        printf ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
         neurolkh_trials = 1
         while neurolkh_trials < neurolkh_runtimes.shape[0] and neurolkh_runtimes[neurolkh_trials - 1] + feat_runtime + sgn_runtime < lkh_runtimes[trials - 1]:
             neurolkh_trials += 1
-        print ("NeuroLKH %d %d %ds (%d trials)" % (neurolkh_objs[neurolkh_trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[neurolkh_trials - 1] + feat_runtime + sgn_runtime, neurolkh_trials))
+        printf ("NeuroLKH %d %d %ds (%d trials)" % (neurolkh_objs[neurolkh_trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[neurolkh_trials - 1] + feat_runtime + sgn_runtime, neurolkh_trials))
         trials *= 10
+
+    if file:
+        file.close()
+        with open(args.output) as f:
+            for line in f.readlines():
+                print(line, end='')
