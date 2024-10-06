@@ -94,7 +94,7 @@ def read_results(log_filename, feat_filename, max_trials):
             assert len(alpha_lists[-1]) == edge_count
     return result, alpha_lists
 
-def write_candidate(feat_filename, candidate, n_nodes_extend):
+def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):
     n_node = candidate.shape[0]
     with open(feat_filename, "w") as f:
         f.write(str(n_nodes_extend) + "\n")
@@ -104,3 +104,45 @@ def write_candidate(feat_filename, candidate, n_nodes_extend):
                 line += " " + str(int(candidate[j, _]) + 1) + " " + str(_ * 100)
             f.write(line + "\n")
         f.write("-1\nEOF\n")
+
+def write_candidate_CVRPTW(feat_filename, candidate, candidate2, **unused):
+    candidate1 = candidate
+    n_node = candidate1.shape[0] - 1 # n_node without depot
+    with open(feat_filename, "w") as f:
+        f.write(str((n_node + 20) * 2) + "\n")
+        line = "1 0 5 " + str(1 + n_node + 20) + " 0"
+        for _ in range(4):
+            line += " " + str(2 * n_node + 2 * 20 - _) + " 1"
+        f.write(line + "\n")
+        for j in range(1, n_node + 1):
+            line = str(j + 1) + " 0 5 " + str(j + 1 + n_node + 20) + " 1"
+            for _ in range(4):
+                line += " " + str(candidate2[j, _] + 1 + n_node + 20) + " 1"
+            f.write(line + "\n")
+        for j in range(19):
+            line = str(n_node + 1 + 1 + j) + " 0 5 " + str(n_node + 1 + 1 + j + n_node + 20) + " 0 " + str(1 + n_node + 20) + " 1"
+            for _ in range(3):
+                line += " " + str(n_node + 2 + _ + n_node + 20) + " 1" 
+            f.write(line + "\n")
+        
+        line = str(1 + n_node + 20) + " 0 5 1 0"
+        for _ in range(4):
+            line += " " + str( n_node + 20 - _) + " 1"
+        f.write(line + "\n")
+        for j in range(1, n_node + 1):
+            line = str(j + 1 + n_node + 20) + " 0 5 " + str(j + 1) + " 1"
+            for _ in range(4):
+                line += " " + str(candidate1[j, _] + 1) + " 1"
+            f.write(line + "\n")
+        for j in range(19):
+            line = str(n_node + 2 + j + n_node + 20) + " 0 5 " + str(n_node + 2 + j) + " 0"
+            for _ in range(4):
+                line += " " + str(n_node + 20 - _) + " 1"
+            f.write(line + "\n")
+        f.write("-1\nEOF\n")
+
+
+write_candidate_dispather = {
+    "CVRP": write_candidate_CVRP,
+    "CVRPTW": write_candidate_CVRPTW
+}

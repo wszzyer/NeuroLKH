@@ -14,7 +14,7 @@ import numpy as np
 
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate
+from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate_dispather
 from utils.utils import smooth_matrix, map_wrapper
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
@@ -38,7 +38,7 @@ def get_args():
     return parser.parse_args()
 
 @map_wrapper
-def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, n_nodes_extend=None):
+def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, candidate2=None, n_nodes_extend=None):
     """
     solve LKH or NeuroLKH or generate candidate set. (if candidate is given.)
     """
@@ -52,7 +52,7 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
         write_instance(instance, instance_name, instance_filename, N_NODES)
         write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, candidate_set_type=candidate_type)
         if candidate is not None:
-            write_candidate(candidate_filename, candidate, n_nodes_extend)
+            write_candidate_dispather[instance["TYPE"]](feat_filename = candidate_filename, candidate = candidate, candidate2 = candidate2, n_nodes_extend = n_nodes_extend)
         f = open(log_filename, "w") if log_filename else DEVNULL
         check_call(["./LKH", para_filename], stdout=f)
     
@@ -94,7 +94,7 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, 
     instance = {}
     
     instance["TYPE"] = "CVRP" if not withTW else "CVRPTW"
-    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * max_extra_nodes_ratio - N_NODES + 1)), N_NODES)
+    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * max_extra_nodes_ratio - N_NODES + 1), N_NODES // 20 + 1), N_NODES)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
@@ -201,22 +201,23 @@ def generate_dataset(dataset, n_nodes, dataset_name):
 
     # Rewrite edge_index via alpha and take record of alpha values
     alpha_values = np.zeros_like(edge_index)
-    for problem_index, problem_alpha in enumerate(alpha_raw):
-        for index, alpha_list in enumerate(problem_alpha):
-            nn_list = list(edge_index[problem_index][index])
-            assert len(nn_list) == n_neighbours
-            cur = 0
-            for target, alpha in alpha_list:
-                if target in nn_list:
-                    nn_list.remove(target)
-                edge_index[problem_index][index][cur] = target
-                alpha_values[problem_index][index][cur] = alpha
-                cur += 1
-            max_alpha = alpha_list[-1][1] # The alpha list is alread sort
-            while cur < n_neighbours:
-                edge_index[problem_index][index][cur] = nn_list.pop(0)
-                alpha_values[problem_index][index][cur] = int(max_alpha * 1.2) # An arbritary penalty
-                cur += 1
+    if args.problem == "CVRP":
+        for problem_index, problem_alpha in enumerate(alpha_raw):
+            for index, alpha_list in enumerate(problem_alpha):
+                nn_list = list(edge_index[problem_index][index])
+                assert len(nn_list) == n_neighbours
+                cur = 0
+                for target, alpha in alpha_list:
+                    if target in nn_list:
+                        nn_list.remove(target)
+                    edge_index[problem_index][index][cur] = target
+                    alpha_values[problem_index][index][cur] = alpha
+                    cur += 1
+                max_alpha = alpha_list[-1][1] # The alpha list is alread sort
+                while cur < n_neighbours:
+                    edge_index[problem_index][index][cur] = nn_list.pop(0)
+                    alpha_values[problem_index][index][cur] = int(max_alpha * 1.2) # An arbritary penalty
+                    cur += 1
     edge_feat_list = []
     for feat_class in FEATS:
         if feat_class.feat_type != "edge":

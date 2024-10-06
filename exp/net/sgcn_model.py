@@ -78,6 +78,9 @@ class SparseGCNModel(nn.Module):
         return y_pred_nodes
 
     def directed_forward(self, x_nodes, x_edges, edge_index, inverse_edge_index, y_edges1, y_edges2, edge_cw, n_edges):
+        # note that you must use model.eval() during evaluation phase, because of BatchNorm
+        x_nodes = self.nodes_batchnorm(x_nodes.transpose(-1, -2)).transpose(-1, -2)
+        x_edges = self.edges_batchnorm(x_edges.transpose(-1, -2)).transpose(-1, -2)
         batch_size, num_nodes, _ = x_nodes.size()
         if self.problem == "pdp":
             node_state = torch.zeros((batch_size, num_nodes, 3), device=x_nodes.device)
@@ -93,6 +96,7 @@ class SparseGCNModel(nn.Module):
         for layer in range(self.n_gcn_layers):
             x, e = self.gcn_layers[layer](x, e, edge_index, inverse_edge_index, n_edges)
         y_pred_edges = self.mlp_edges(e).view(batch_size, num_nodes, n_edges, 2)
+        reg_loss = torch.linalg.vector_norm(y_pred_edges, dim=(1, 2, 3))
         y_pred_edges1 = torch.nn.functional.softmax(y_pred_edges[..., 0], dim=-1)
         y_pred_edges1 = y_pred_edges1.view(batch_size, num_nodes * n_edges, 1)
         y_pred_edges1 = torch.cat([1 - y_pred_edges1, y_pred_edges1], dim = 2)
@@ -107,4 +111,5 @@ class SparseGCNModel(nn.Module):
         loss1 = loss1.view(batch_size, num_nodes, n_edges)[loss_mask]
         loss2 = loss_edges(y_pred_edges2, y_edges2, edge_cw)
         loss2 = loss2.view(batch_size, num_nodes, n_edges)[loss_mask]
-        return y_pred_edges1, y_pred_edges2, loss1, loss2, None
+
+        return y_pred_edges1, y_pred_edges2, loss1, loss2, reg_loss

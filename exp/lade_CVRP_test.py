@@ -14,6 +14,7 @@ from functools import partial
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
     parser.add_argument('--file_path', type=str, default='data/generated/CVRP_val_scatter_yt_111_100.pkl', help='')
     parser.add_argument('--model_path', type=str, default='saved/exp1/best.pth', help='')
     parser.add_argument('--batch_size', type=int, default=32, help='')
@@ -26,24 +27,44 @@ def get_args():
     return parser.parse_args()
 
 from feats import get_all_feats, parse_feat_strs
-from utils.lkh_utils import write_instance, write_para, read_feat, write_candidate
+from utils.lkh_utils import read_feat
 from lade_generate import solve_LKH, max_extra_nodes_ratio
 import lade_generate
 
-def infer_SGN(net, test_loader):
+def infer_SGN(net, test_loader, is_cvrptw = False):
+    """
+    """
     candidate = []
+    candidate2 = []
+    max_candidate = 5 if not is_cvrptw else 20
     for batch in tqdm(test_loader, desc="infer SGN"):
         node_feat, edge_feat, edge_index, inverse_edge_index = map(lambda t: t.to(args.device), batch)
         batch_size = node_feat.shape[0]
-        y_edges, _, _, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, 20)
+        if not is_cvrptw:
+            y_edges, _, _, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, 20)
+        else:
+            y_edges, y_edges2,  _, _, y_nodes = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, None, 20)
+        
         y_edges = y_edges.detach().cpu().numpy()
         y_edges = y_edges[:, :, 1].reshape(batch_size, node_feat.shape[1], 20)
         y_edges = np.argsort(-y_edges, -1)
         edge_index = edge_index.cpu().numpy().reshape(-1, y_edges.shape[1], 20)
         candidate_index = edge_index[np.arange(batch_size).reshape(-1, 1, 1), np.arange(y_edges.shape[1]).reshape(1, -1, 1), y_edges]
-        candidate.append(candidate_index[:, :, :5])
+        candidate.append(candidate_index[:, :, :max_candidate])
+
+        if is_cvrptw:
+            y_edges2 = y_edges2.detach().cpu().numpy()
+            y_edges2 = y_edges2[:, :, 1].reshape(batch_size, node_feat.shape[1], 20)
+            y_edges2 = np.argsort(-y_edges2, -1)
+            candidate2_index = edge_index[np.arange(batch_size).reshape(-1, 1, 1), np.arange(y_edges2.shape[1]).reshape(1, -1, 1), y_edges2]
+            candidate2.append(candidate2_index[:, :, :max_candidate])
+
     candidate = np.concatenate(candidate, 0)
-    return candidate
+    if not is_cvrptw:
+        return candidate
+    else:
+        candidate2 = np.concatenate(candidate2, 0)
+        return candidate, candidate2
 
 def read_results(log_filename, _, max_trials):
     objs = []
@@ -67,7 +88,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     
     LKH_param_dir = "result/" + dataset_name + "/" + method + "_para"
     LKH_log_dir = "result/" + dataset_name + "/" + method + "_log"
-    instance_dir = "result/" + dataset_name + "/cvrp"
+    instance_dir = "result/" + dataset_name + f"/{args.problem}"
     os.makedirs(instance_dir, exist_ok=True)
     os.makedirs(LKH_param_dir, exist_ok=True) 
     os.makedirs(LKH_log_dir, exist_ok=True)
@@ -87,14 +108,23 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         
         FEATS = get_all_feats()
 
-        max_nodes = int(n_nodes * max_extra_nodes_ratio)
+        max_nodes = int(n_nodes * max_extra_nodes_ratio) if allow_extend_nodes else n_nodes
         n_samples = len(dataset)
         n_neighbours = 20
-        feats = tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset))
-        edge_index, n_nodes_extend, feat_runtime = list(zip(*feats))
-        feat_runtime = np.sum(feat_runtime)
+
+        if generate_candidate_by_LKH:
+            feats = tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset))
+            edge_index, n_nodes_extend, feat_runtime = list(zip(*feats))
+            feat_runtime = np.sum(feat_runtime)
+            edge_index = np.concatenate(edge_index, 0)
+        else:
+            from feats.weight_feat import SSSPFeat
+            dist = np.stack([instance["ATTACHMENT"][SSSPFeat] for instance in dataset])
+            edge_index = np.argsort(dist, -1)[:, :, 1:1 + n_neighbours]
+            n_nodes_extend = [(n_nodes + 19) * 2] * n_samples
+            feat_runtime = 0
+
         feat_start_time = time.time()
-        edge_index = np.concatenate(edge_index, 0)
         
         # 这一部分代码写重复了，周六再封装的好看一点。
         # construct node features.
@@ -108,6 +138,9 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
         # coords needs scale for faster training.
         node_feat_list = [x, demand[:, :, None], capacity[:, :, None]]
+        if dataset[0]["TYPE"] == "CVRPTW":
+            start_end_time = np.stack([d["TIME_WINDOW_SECTION"] for d in dataset])
+            node_feat_list += [start_end_time[..., 0:1], start_end_time[..., 1:2]]
         for feat_class in FEATS:
             if feat_class.feat_type != "node":
                 continue
@@ -135,7 +168,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         feat_runtime += time.time() - feat_start_time
 
         node_feats_cls, edge_feats_cls = parse_feat_strs(args.use_feats,  print_result=True)
-        net = SparseGCNModel(problem="cvrp",
+        net = SparseGCNModel(problem=args.problem.lower(),
                          n_mlp_layers=4,
                          node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)),
                          edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)))
@@ -143,14 +176,17 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         saved = torch.load(args.model_path, weights_only=True)
         net.load_state_dict(saved)
         sgn_start_time = time.time()
-        
-        test_dataset = LaDeTestDataset("cvrp", node_feat, edge_feat, edge_index, inverse_edge_index, node_feats_cls, edge_feats_cls)
+        test_dataset = LaDeTestDataset(args.problem.lower(), node_feat, edge_feat, edge_index, inverse_edge_index, node_feats_cls, edge_feats_cls)
         assert test_dataset.size % args.batch_size == 0
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
         with torch.no_grad():
-            candidate = infer_SGN(net, test_loader)
+            if args.problem == "CVRP":
+                candidate = infer_SGN(net, test_loader, is_cvrptw=False)
+                candidate2 = None
+            else:
+                candidate, candidate2 = infer_SGN(net, test_loader, is_cvrptw=True)
         sgn_runtime = time.time() - sgn_start_time
-        results = list(tqdm(pool.imap(solve_LKH, [("NeuroLKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials, None, candidate_dir, candidate[i], n_nodes_extend[i]) for i in range(len(dataset))]), total=len(dataset)))
+        results = list(tqdm(pool.imap(solve_LKH, [("NeuroLKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), rerun, max_trials, None, candidate_dir, candidate[i], candidate2[i], n_nodes_extend[i]) for i in range(len(dataset))]), total=len(dataset)))
     else:
         assert method == "LKH"
         feat_runtime = 0
@@ -163,7 +199,17 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     return dataset_objs, dataset_penalties, dataset_runtimes, feat_runtime, sgn_runtime
 
 if __name__ == "__main__":
+    # global variables
     args = get_args()
+    assert args.problem in ["CVRP", "CVRPTW"]
+    if args.problem == "CVRPTW":
+        allow_extend_nodes = False
+        split_edge_label = True
+        generate_candidate_by_LKH = False
+    else:
+        allow_extend_nodes = True
+        split_edge_label = False
+        generate_candidate_by_LKH = True
     
     pool = mp.Pool(args.num_cpus)
     

@@ -46,4 +46,4 @@ def get_problem_default_node_feat_dim(problem: str) -> int:
     elif problem == "cvrptw":
         return 6 # x, y, demand, start_time, end_time, capacity
     else:
-        assert RuntimeError(f"Fail to recognize problem type {problem}")
+        raise RuntimeError(f"Fail to recognize problem type {problem}")

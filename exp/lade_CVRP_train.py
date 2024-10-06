@@ -83,7 +83,7 @@ if __name__ == "__main__":
                 node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), batch)
             else:
                 assert args.problem == "cvrptw"
-                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), batch)
+                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), batch)
             batch_size = node_feat.shape[0]
             if args.problem == "cvrp":
                 y_edges, loss_edges, reg_loss,  y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
@@ -95,7 +95,6 @@ if __name__ == "__main__":
                 assert args.problem == "cvrptw"
                 y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
                 loss_edges = (loss_edges1.mean() + loss_edges2.mean())/2
-                raise RuntimeError
 
             n_nodes = node_feat.size(1)
             loss = loss_edges
@@ -111,10 +110,9 @@ if __name__ == "__main__":
                 rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
                 rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
                 rank_train[(index % (MAGIC * 2)) // 2].append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
-            
+                print (f"Epoch {epoch} loss {np.sum(statistics['loss_train'])/statistics['train_sample_count']:.7f} rank:", ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(MAGIC)]))    
             pbar.set_postfix({"train_loss": loss_edges.item()})
         scheduler.step()
-        print (f"Epoch {epoch} loss {np.sum(statistics['loss_train'])/statistics['train_sample_count']:.7f} rank:", ",".join([str(np.mean(rank_train[_]) + 1)[:5] for _ in range(MAGIC)]))
 
         if epoch % args.eval_interval == 0:
             net.eval()
@@ -127,7 +125,7 @@ if __name__ == "__main__":
                     node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), val_batch)
                 else:
                     assert args.problem == "cvrptw"
-                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), val_batch)
+                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
 
                 with torch.no_grad():
                     batch_size = node_feat.shape[0]
@@ -141,8 +139,8 @@ if __name__ == "__main__":
                         loss_edges = loss_edges.mean() + args.ramuda * reg_loss.mean() + args.l_a * alpha_loss(logsoft_y_edges, alpha_prob).mean()
                     else:
                         assert args.problem == "cvrptw"
-                        y_edges1, y_edges2, loss_edges1, loss_edges2, _ = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
-                        loss_edges = (loss_edges1.mean() + loss_edges2.mean())/2
+                        y_edges1, y_edges2, loss_edges1, loss_edges2, reg_loss = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
+                        loss_edges = (loss_edges1.mean() + loss_edges2.mean() + args.ramuda * reg_loss.mean())/2
                     
                     if args.problem == "cvrp":
                         y_edges = y_edges.detach().cpu().numpy()
@@ -152,7 +150,7 @@ if __name__ == "__main__":
                         dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
                     statistics["loss_val"].append(loss_edges.detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
-            eval_results.append(np.mean(dataset_rank) + 1)
+            # eval_results.append(np.mean(dataset_rank) + 1)
             avg_loss = np.sum(statistics['loss_val'])/statistics['val_sample_count']
             print (f"{args.eval_file_path} loss {avg_loss:.7f}")
             if avg_loss < best_loss:
