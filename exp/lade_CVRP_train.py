@@ -114,7 +114,7 @@ if __name__ == "__main__":
             pbar.set_postfix({"train_loss": loss_edges.item()})
         scheduler.step()
 
-        if epoch % args.eval_interval == 0:
+        if (epoch + 1) % args.eval_interval == 0:
             net.eval()
             eval_results = []
             dataset_rank = []
@@ -163,7 +163,7 @@ if __name__ == "__main__":
                     print("Early stop triggered, stop training.")
                     break
 
-        if epoch % args.save_interval == 0:
+        if (epoch + 1) % args.save_interval == 0:
             torch.save({"epoch": epoch, 
                         "best_loss": best_loss,
                         "model": net.state_dict(), 

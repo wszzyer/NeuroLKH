@@ -212,9 +212,11 @@ if __name__ == "__main__":
         generate_candidate_by_LKH = True
     
     pool = mp.Pool(args.num_cpus)
+    sample_trials = [1, 10, 100, 500, 1000, 2000, 3000]
     
     neurolkh_objs, neurolkh_penalties, neurolkh_runtimes, feat_runtime, sgn_runtime = eval_dataset(args.file_path, "NeuroLKH", args=args, rerun=True, max_trials=args.neurolkh_trials) 
     lkh_objs, lkh_penalties, lkh_runtimes, _, _ = eval_dataset(args.file_path, "LKH", args=args, rerun=True, max_trials=args.lkh_trials)
+    min_trials = min(lkh_objs.shape[0], neurolkh_objs.shape[0])
 
     if args.output:
         file = open(args.output, mode='w') # Throw error upon illegal output parameter
@@ -224,22 +226,23 @@ if __name__ == "__main__":
 
     printf ("generating features runtime: %.1fs SGN inferring runtime: %.1fs" % (feat_runtime, sgn_runtime))
     printf ("method obj penalties runtime")
-    trials = 1
-    while trials <= lkh_objs.shape[0]:
+    for trials in sample_trials:
+        if trials > min_trials:
+            break
         printf ("------experiments of trials: %d ------" % (trials))
         printf ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
         printf ("NeuroLKH %d %d %ds" % (neurolkh_objs[trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[trials - 1] + feat_runtime + sgn_runtime))
-        trials *= 10
     printf ("------comparison with same time limit------")
     trials = 1
-    while trials <= lkh_objs.shape[0]:
+    for trials in sample_trials:
+        if trials > min_trials:
+            break
         printf ("------experiments of trials: %d ------" % (trials))
         printf ("LKH      %d %d %ds" % (lkh_objs[trials - 1], lkh_penalties[trials - 1], lkh_runtimes[trials - 1]))
         neurolkh_trials = 1
         while neurolkh_trials < neurolkh_runtimes.shape[0] and neurolkh_runtimes[neurolkh_trials - 1] + feat_runtime + sgn_runtime < lkh_runtimes[trials - 1]:
             neurolkh_trials += 1
         printf ("NeuroLKH %d %d %ds (%d trials)" % (neurolkh_objs[neurolkh_trials - 1], neurolkh_penalties[trials - 1], neurolkh_runtimes[neurolkh_trials - 1] + feat_runtime + sgn_runtime, neurolkh_trials))
-        trials *= 10
 
     if file:
         file.close()
