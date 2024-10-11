@@ -182,7 +182,7 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
         with torch.no_grad():
             if args.problem == "CVRP":
                 candidate = infer_SGN(net, test_loader, is_cvrptw=False)
-                candidate2 = None
+                candidate2 = [None] * len(candidate)
             else:
                 candidate, candidate2 = infer_SGN(net, test_loader, is_cvrptw=True)
         sgn_runtime = time.time() - sgn_start_time

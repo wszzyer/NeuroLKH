@@ -96,7 +96,7 @@ class SparseGCNModel(nn.Module):
         for layer in range(self.n_gcn_layers):
             x, e = self.gcn_layers[layer](x, e, edge_index, inverse_edge_index, n_edges)
         y_pred_edges = self.mlp_edges(e).view(batch_size, num_nodes, n_edges, 2)
-        reg_loss = torch.linalg.vector_norm(y_pred_edges, dim=(1, 2, 3))
+        reg_loss = torch.linalg.vector_norm(y_pred_edges, dim=(1, 2, 3), ord=1)
         y_pred_edges1 = torch.nn.functional.softmax(y_pred_edges[..., 0], dim=-1)
         y_pred_edges1 = y_pred_edges1.view(batch_size, num_nodes * n_edges, 1)
         y_pred_edges1 = torch.cat([1 - y_pred_edges1, y_pred_edges1], dim = 2)
