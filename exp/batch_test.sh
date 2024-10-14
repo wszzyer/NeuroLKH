@@ -20,6 +20,11 @@ fi
 
 for instance in $(ls ./data/raw_instance/* |grep val)
 do
+    instance_problem=$(echo $instance | awk -F / "{print \$4;}" | awk -F _ "{print \$1}")
+    if [[ $instance_problem != ${problem^^} ]]
+    then
+        continue
+    fi
     if [[ ! -d "./result/$1" ]]
     then
         mkdir "./result/$1"

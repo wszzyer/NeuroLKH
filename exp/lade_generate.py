@@ -31,7 +31,7 @@ def get_args():
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio")
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
-    parser.add_argument("--citys", action="append", dest="citys", help="citys to generate data")
+    parser.add_argument("--citys", action="extend", nargs="+", dest="citys", help="citys to generate data")
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
     parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
     parser.add_argument("--postfix", type=str, default="", help="dataset postfix")

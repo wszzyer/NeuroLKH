@@ -42,7 +42,7 @@ then
     device=cuda:$(($(awk -F _ "{print \$2;}" <<< $tmux_session_name) - 1))
 fi
 
-for train_instance in $(ls ./data/generated/* |grep train)
+for train_instance in $(ls ./data/generated/* |grep train | grep ${problem^^})
 do
     val_instance=${train_instance/train/val}
     city=$(awk -F _ "{print \$4;}" <<< $train_instance)

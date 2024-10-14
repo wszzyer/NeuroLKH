@@ -30,6 +30,8 @@ class LaDeDataset(Dataset):
             self.key_list = ["node_feat", "edge_feat", "label1", "label2", "edge_index", "inverse_edge_index", "alpha_values"]
         elif self.problem == "cvrp":
             self.key_list = ["node_feat", "edge_feat", "label", "edge_index", "inverse_edge_index", "alpha_values"]
+        else:
+            raise RuntimeError(f"Cannot recognize problem type: {self.problem}")
 
     def __iter__(self):
         return iter(zip([self.dataset[key] for key in self.key_list]))

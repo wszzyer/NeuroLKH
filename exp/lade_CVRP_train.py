@@ -151,7 +151,7 @@ if __name__ == "__main__":
                     statistics["val_sample_count"] += batch_size
             avg_loss = np.sum(statistics["val_loss"])/statistics['val_sample_count']
             print (f"{args.eval_file_path} loss {avg_loss:.7f} edge_loss {np.sum(statistics["val_loss"])/statistics['val_sample_count']:.7f}" + 
-                   f" Avg rank: {np.mean(dataset_rank):3f}" if dataset_rank else "")
+                   (f" Avg rank: {np.mean(dataset_rank):3f}" if dataset_rank else ""))
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 worse_count = 0
