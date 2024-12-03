@@ -5,9 +5,10 @@ import argparse
 import tqdm
 from itertools import islice
 from subprocess import check_call, DEVNULL
-import statistics
+from pathlib import Path
 import pickle
 import functools
+import time
 
 import pandas as pd
 import numpy as np
@@ -15,12 +16,14 @@ import numpy as np
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate_dispather
-from utils.utils import smooth_matrix, map_wrapper
+from utils.utils import map_wrapper
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
 generate_candidate_by_LKH = None # 是否通过 LKH 生成候选集，否则直接在 python 端生成候选集。
 max_extra_nodes_ratio = 1.15
+N_NODES = 100
+N_EDGES = 20
 fetch_lade()
 np.random.seed(114514)
 
@@ -28,6 +31,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool")
     parser.add_argument("--n-nodes", type=int, default=100, help="num nodes")
+    parser.add_argument("--n-edges", type=int, default=20, help="num edges")
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio")
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
@@ -35,10 +39,12 @@ def get_args():
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
     parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
     parser.add_argument("--postfix", type=str, default="", help="dataset postfix")
+    parser.add_argument("--output_dir", type=str, default="./data", help="data save folder")
     return parser.parse_args()
 
 @map_wrapper
-def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, candidate2=None, n_nodes_extend=None):
+def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, 
+              rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, candidate2=None, n_nodes_extend=None):
     """
     solve LKH or NeuroLKH or generate candidate set. (if candidate is given.)
     """
@@ -50,7 +56,7 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
     if rerun or not os.path.isfile(log_filename):
         write_instance(instance, instance_name, instance_filename, N_NODES)
-        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, candidate_set_type=candidate_type)
+        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidate=N_EDGES, candidate_set_type=candidate_type)
         if candidate is not None:
             write_candidate_dispather[instance["TYPE"]](feat_filename = candidate_filename, candidate = candidate, candidate2 = candidate2, n_nodes_extend = n_nodes_extend)
         f = open(log_filename, "w") if log_filename else DEVNULL
@@ -142,26 +148,27 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, 
     
     return instance
 
-def generate_dataset(dataset, n_nodes, dataset_name):
+def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
     # configs.
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
     max_nodes = int(n_nodes * max_extra_nodes_ratio) if allow_extend_nodes else n_nodes
-    n_neighbours = 20
     
     # temperory directories.
-    instance_dir = "tmp/" + dataset_name + "/instance"
-    feat_param_dir = "tmp/" + dataset_name + "/featgen_para"
-    feat_dir = "tmp/" + dataset_name + "/feat"
-    LKH_param_dir = "tmp/" + dataset_name + "/LKH_para"
-    LKH_log_dir = "tmp/" + dataset_name + "/LKH_log"
+    tmp_dir = output_dir / "tmp"
+    instance_dir = tmp_dir / dataset_name / "instance"
+    feat_param_dir = tmp_dir / dataset_name /  "featgen_para"
+    feat_dir = tmp_dir / dataset_name /  "feat"
+    LKH_param_dir = tmp_dir / dataset_name /  "LKH_para"
+    LKH_log_dir = tmp_dir / dataset_name /  "LKH_log"
+    generated_dir = output_dir / "generated"
     
-    os.makedirs("data/generated/", exist_ok=True)
-    os.makedirs(instance_dir, exist_ok=True)
-    os.makedirs(feat_param_dir, exist_ok=True) 
-    os.makedirs(feat_dir, exist_ok=True)
-    os.makedirs(LKH_param_dir, exist_ok=True) 
-    os.makedirs(LKH_log_dir, exist_ok=True)
+    generated_dir.mkdir(exist_ok=True)
+    instance_dir.mkdir(exist_ok=True, parents=True)
+    feat_param_dir.mkdir(exist_ok=True)
+    feat_dir.mkdir(exist_ok=True)
+    LKH_param_dir.mkdir(exist_ok=True)
+    LKH_log_dir.mkdir(exist_ok=True)
     
     # construct node features.
     demand = np.stack([d["DEMAND"] for d in dataset])
@@ -184,40 +191,45 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         node_feat_list.append(np.concatenate([feat, feat[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], axis=1))
     node_feat = np.concatenate(node_feat_list, -1)
     
+    # k-nearest neighbors, dist matrices and alpha values
+    # This can be up to 100G if you don't take care with. What a monster.
+    # edge_mask_info = np.zeros((3, n_samples, max_nodes, max_nodes), dtype=np.int32)
+    # edge_mask_info_flag and n_nodes_extend
+    # mask_flag = np.zeros(3, dtype=np.bool_)
+
     if generate_candidate_by_LKH:
         # dummy_mat is matrix with duplicated depot nodes.
         feats = tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat')
         edge_index, n_nodes_extend, _ = list(zip(*feats))
         edge_index = np.concatenate(edge_index, 0)
+        # edge_mask_info[0][*np.ogrid[:n_samples, :max_nodes, :1][:-1], edge_index] = 1
+        node_num = np.array(n_nodes_extend, dtype=np.int32)
     else:
-        from feats.weight_feat import SSSPFeat
+        from feats import SSSPFeat
         dist = np.stack([instance["ATTACHMENT"][SSSPFeat] for instance in dataset])
-        edge_index = np.argsort(dist, -1)[:, :, 1:1 + n_neighbours]
+        edge_index = np.argsort(dist, -1)[..., 1:1 + N_EDGES]
+        node_num = np.full((n_samples, ), n_nodes, dtype=np.int32)
 
     results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000, None, feat_dir) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     if not allow_extend_nodes:
         results = np.array(results)
         results[results > n_nodes] = 0
 
-    # Rewrite edge_index via alpha and take record of alpha values
-    alpha_values = np.zeros_like(edge_index)
-    if args.problem == "CVRP":
-        for problem_index, problem_alpha in enumerate(alpha_raw):
-            for index, alpha_list in enumerate(problem_alpha):
-                nn_list = list(edge_index[problem_index][index])
-                assert len(nn_list) == n_neighbours
-                cur = 0
-                for target, alpha in alpha_list:
-                    if target in nn_list:
-                        nn_list.remove(target)
-                    edge_index[problem_index][index][cur] = target
-                    alpha_values[problem_index][index][cur] = alpha
-                    cur += 1
-                max_alpha = alpha_list[-1][1] # The alpha list is alread sort
-                while cur < n_neighbours:
-                    edge_index[problem_index][index][cur] = nn_list.pop(0)
-                    alpha_values[problem_index][index][cur] = int(max_alpha * 1.2) # An arbritary penalty
-                    cur += 1
+    for problem_index, problem_alpha in enumerate(alpha_raw):
+        for index, alpha_list in enumerate(problem_alpha):
+            nn_list = list(edge_index[problem_index][index])
+            cur = 0
+            for target, alpha in alpha_list:
+                if target in nn_list:
+                    nn_list.remove(target)
+                edge_index[problem_index][index][cur] = target
+                cur += 1
+            while cur < N_EDGES:
+                edge_index[problem_index][index][cur] = nn_list.pop(0)
+                cur += 1
+
+    sample_index, node_index = np.ogrid[:n_samples, :max_nodes, :1][:-1]
+
     edge_feat_list = []
     for feat_class in FEATS:
         if feat_class.feat_type != "edge":
@@ -228,12 +240,12 @@ def generate_dataset(dataset, n_nodes, dataset_name):
         dummy_mat[:, :feat.shape[1], :feat.shape[1]] = feat
         dummy_mat[:, feat.shape[1]:, :] = dummy_mat[:, :1, :]
         dummy_mat[:, :, feat.shape[1]:] = dummy_mat[:, :, :1]
-        edge_feat_list.append(dummy_mat[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index][..., None])
-    edge_feat = np.concatenate(edge_feat_list, -1)
+        edge_feat_list.append(dummy_mat[sample_index, node_index, edge_index])
+    edge_feat = np.stack(edge_feat_list, -1)
 
-    inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype="int")
-    inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), edge_index, np.arange(max_nodes).reshape(1, -1, 1)] = np.arange(n_neighbours).reshape(1, 1, -1) + np.arange(max_nodes).reshape(1, -1, 1) * n_neighbours
-    inverse_edge_index = inverse_edge_index[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
+    inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype=np.int32)
+    inverse_edge_index[sample_index, edge_index, node_index] = np.arange(N_EDGES).reshape(1, 1, -1) + node_index * N_EDGES
+    inverse_edge_index = inverse_edge_index[sample_index, node_index, edge_index]
     
     # construct edge label.
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
@@ -249,25 +261,24 @@ def generate_dataset(dataset, n_nodes, dataset_name):
     label2 = label2[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     feat = {
-        "node_feat":node_feat,
-        "edge_feat":edge_feat,
-        "edge_index":edge_index,
-        "inverse_edge_index":inverse_edge_index,
-        "alpha_values": alpha_values
+        "node_feat": node_feat,
+        "edge_feat": edge_feat,
+        "edge_index": edge_index,
+        "node_num": node_num
     }
     if not split_edge_label:
         feat["label"] = label
     else:
-        feat["label1"] = label
-        feat["label2"] = label2
+        feat["label"] = np.stack((label, label2)).transpose(1, 0, 2, 3)
 
-    with open("data/generated/" + dataset_name + ".pkl", "wb") as f:
+    with (generated_dir / f"{dataset_name}.pkl").open("wb") as f:
         pickle.dump(feat, f)
         
 if __name__ == "__main__":
     # global variables
     args = get_args()
     N_NODES = args.n_nodes
+    N_EDGES = args.n_edges
     SAMPLE_TYPE = args.sample_type
     FEATS = get_all_feats()
     if args.problem == "CVRPTW":
@@ -279,6 +290,7 @@ if __name__ == "__main__":
         split_edge_label = False
         generate_candidate_by_LKH = True
     trajectory_df = None
+    output_dir = Path(args.output_dir).resolve()
 
     pool = mp.Pool(args.num_cpus)
 
@@ -391,16 +403,17 @@ if __name__ == "__main__":
             
             
             postfix = "_" + args.postfix if args.postfix else ""
-            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}{postfix}"
+            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}_{N_EDGES}{postfix}"
             
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
             # 目前用验证集的 instance 当成测试集，周六再改。
-            os.makedirs("data/raw_instance", exist_ok=True)
-            with open("data/raw_instance/" + dataset_name_template % "train_raw" + ".pkl", "wb") as f:
+            raw_dir = output_dir / "raw_instance"
+            raw_dir.mkdir(exist_ok=True)
+            with open(raw_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
                 pickle.dump(train_instance, f)
-            with open("data/raw_instance/" + dataset_name_template % "val_raw" + ".pkl", "wb") as f:
+            with open(raw_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
                 pickle.dump(val_instance, f)
             
-            generate_dataset(train_instance, N_NODES, dataset_name_template % "train")
-            generate_dataset(val_instance, N_NODES, dataset_name_template % "val")
+            generate_dataset(train_instance, N_NODES, dataset_name_template % "train", output_dir)
+            generate_dataset(val_instance, N_NODES, dataset_name_template % "val", output_dir)
     

@@ -4,6 +4,9 @@ cache/
 /exp/data
 /exp/saved
 /exp/result
+/exp/evaluation
 LKH
 /SRC/OBJ
 .vscode/
+*.ipynb
+todo

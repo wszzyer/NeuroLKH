@@ -31,7 +31,8 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
                 f.write(f"{i+1} {tw_begin} {tw_end}\n")
         f.write("EOF\n")
 
-def write_para(feat_filename, instance_filename, method, para_filename, candidate_set_type="nn", max_trials=1000, seed=1234):
+def write_para(feat_filename, instance_filename, method, para_filename, candidate_set_type="nn",
+                max_trials=1000, max_candidate=20, seed=1234):
     candidate_type_map = {
         "nn": "NEAREST-NEIGHBOR",
         "alpha": "ALPHA"
@@ -49,7 +50,7 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
                 os.remove(feat_filename)
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
             f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
-            f.write("MAX_CANDIDATES = 20\n")
+            f.write(f"MAX_CANDIDATES = {max_candidate}\n")
         elif method == "NeuroLKH":
             if os.path.exists(feat_filename):
                 os.remove(feat_filename)
@@ -61,10 +62,9 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
                 if os.path.exists(feat_filename):
                     os.remove(feat_filename)
                 f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-                f.write("MAX_CANDIDATES = 20\n")
+                f.write(f"MAX_CANDIDATES = {max_candidate}\n")
             
-def read_feat(feat_filename, max_nodes):
-    n_neighbours = 20
+def read_feat(feat_filename, max_nodes, n_neighbours=20):
     edge_index = np.zeros([1, max_nodes, n_neighbours], dtype="int")
     with open(feat_filename, "r") as f:
         lines = f.readlines()
@@ -89,9 +89,7 @@ def read_results(log_filename, feat_filename, max_trials):
         n_nodes_extend = int(f.readline().strip())
         for _ in range(n_nodes_extend):
             parts = list(map(int.__call__, f.readline().strip().split()))
-            edge_count = parts[2]
             alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
-            assert len(alpha_lists[-1]) == edge_count
     return result, alpha_lists
 
 def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):

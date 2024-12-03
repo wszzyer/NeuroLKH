@@ -86,9 +86,9 @@ def read_results(log_filename, _, max_trials):
 def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     dataset_name = os.path.splitext(os.path.basename(dataset_filename))[0]
     
-    LKH_param_dir = "result/" + dataset_name + "/" + method + "_para"
-    LKH_log_dir = "result/" + dataset_name + "/" + method + "_log"
-    instance_dir = "result/" + dataset_name + f"/{args.problem}"
+    LKH_param_dir = "evaluation/" + dataset_name + "/" + method + "_para"
+    LKH_log_dir = "evaluation/" + dataset_name + "/" + method + "_log"
+    instance_dir = "evaluation/" + dataset_name + f"/{args.problem}"
     os.makedirs(instance_dir, exist_ok=True)
     os.makedirs(LKH_param_dir, exist_ok=True) 
     os.makedirs(LKH_log_dir, exist_ok=True)
@@ -99,9 +99,9 @@ def eval_dataset(dataset_filename, method, args, rerun=True, max_trials=1000):
     n_nodes = len(dataset[0]["COORD"]) # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
         
     if method == "NeuroLKH":
-        feat_param_dir = "result/" + dataset_name + "/featgen_para"
-        feat_dir = "result/" + dataset_name + "/feat"
-        candidate_dir = "result/" + dataset_name + "/candidate"
+        feat_param_dir = "evaluation/" + dataset_name + "/featgen_para"
+        feat_dir = "evaluation/" + dataset_name + "/feat"
+        candidate_dir = "evaluation/" + dataset_name + "/candidate"
         os.makedirs(feat_param_dir, exist_ok=True) 
         os.makedirs(feat_dir, exist_ok=True)
         os.makedirs(candidate_dir, exist_ok=True)

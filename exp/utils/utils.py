@@ -1,6 +1,8 @@
 import numpy as np
 import networkx as nx
 import functools
+import torch
+from typing import Optional
 
 def map_wrapper(func):
     @functools.wraps(func)
@@ -47,3 +49,44 @@ def get_problem_default_node_feat_dim(problem: str) -> int:
         return 6 # x, y, demand, start_time, end_time, capacity
     else:
         raise RuntimeError(f"Fail to recognize problem type {problem}")
+
+def make_mask(method, 
+              nn:Optional[torch.Tensor]=None, # Sparse one-hot k-nearest neighbors
+              dist_mat:Optional[torch.Tensor]=None, # Dense Shortest Path Matrix
+              alpha_values:Optional[torch.Tensor]=None, # Sparse Alpha values
+              fix_n:Optional[int]=None,
+              dist_threshold:Optional[float]=None):
+
+    nn_flag = (method == 'nn' or method == 'mixed')
+    alpha_flag = (method == 'alpha' or method == 'mixed')
+
+    # I have to admit that this implementation is a little bit tricky
+    # We use topk to implement priority, alpha > dist > nn
+    accumulation_mat = None
+
+    if alpha_flag:
+        if alpha_values is None:
+            raise RuntimeError('Using alpha method to make mask while alpha is None')
+        accumulation_mat = alpha_values.max() - alpha_values
+    
+    if nn_flag:
+        if dist_mat is not None:
+            if accumulation_mat is None:
+                accumulation_mat = dist_mat
+            else:
+                if dist_threshold is not None:
+                    dist_mat = torch.where(dist_mat > dist_threshold, dist_mat - dist_threshold, 0)
+                max_round_dist = np.ceil(dist_mat.max())
+                accumulation_mat = torch.where(accumulation_mat > 0, accumulation_mat + max_round_dist, 0) + dist_mat
+        elif nn is not None:
+            if accumulation_mat is None:
+                accumulation_mat = nn
+            else:
+                accumulation_mat = torch.where(accumulation_mat > 0, accumulation_mat + 10, 0) + nn
+        else:
+            raise RuntimeError('Using nn method to make mask while nn and dist is both None')
+
+    if fix_n:
+        return torch.topk(accumulation_mat, fix_n, sorted=False) # The indices can help further calculation
+    else:
+        return accumulation_mat > 0

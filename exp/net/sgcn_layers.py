@@ -101,23 +101,3 @@ class SparseGCNLayer(nn.Module):
         e = F.relu(e_tmp)
         e_new = e_in + e
         return x_new, e_new
-
-
-class MLP(nn.Module):
-    def __init__(self, input_dim,hidden_dim, output_dim, L=2):
-        super(MLP, self).__init__()
-        self.L = L
-        U = [nn.Linear(input_dim, hidden_dim, True)]
-        if L > 2:
-            for layer in range(self.L - 2):
-                U.append(nn.Linear(hidden_dim, hidden_dim, True))
-        self.U = nn.ModuleList(U)
-        self.V = nn.Linear(hidden_dim, output_dim, True)
-
-    def forward(self, x):
-        Ux = x
-        for U_i in self.U:
-            Ux = U_i(Ux)
-            Ux = F.relu(Ux)
-        y = self.V(Ux)
-        return y
