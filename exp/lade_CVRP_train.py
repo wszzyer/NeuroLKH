@@ -2,9 +2,10 @@ import os
 import argparse
 import numpy as np
 from tqdm import tqdm
-from net.sgcn_model import SparseGCNModel
+from net import SparseGCNModel, GraphTransformer
 from sklearn.utils.class_weight import compute_class_weight
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 from feats import parse_feat_strs
 from utils.dataset import LaDeDataset
@@ -28,10 +29,23 @@ def get_args():
     parser.add_argument('--device', type=str, default="cuda:0", help='')
     parser.add_argument('--early_stop_thres', type=int, default=15)
     parser.add_argument('--ramuda', type=float, default=0.02)
-    parser.add_argument('--l_a', type=float, default=0.15)
     parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
+    parser.add_argument('--model', default='Graphormer', choices=['Graphormer', 'SparseGCN'])
     return parser.parse_args()
 
+def calculate_loss(problem, y_pred_nodes, y_pred_edges, edge_label, edge_cw, loss_mask):
+    batch_size = y_pred_edges.size(0)
+    node_count = y_pred_edges.size(1)
+    if problem == 'cvrp':
+        p_edges = nn.functional.softmax(y_pred_edges, dim=-1).view(batch_size, -1, 2)
+        reg_loss = torch.linalg.vector_norm(p_edges[..., 1], dim=1, ord=2)
+        p_edges = torch.log(p_edges + 1e-5)
+        edge_loss = nn.NLLLoss(edge_cw, reduction="none").to("cuda:3").forward(p_edges.transpose(1, 2), edge_label.flatten(-2).to("cuda:3"))
+        edge_loss = edge_loss.reshape(batch_size, node_count, -1)[loss_mask.to("cuda:3")]
+    else:
+        raise NotImplementedError(problem)
+    return edge_loss, reg_loss
+        
 
 
 if __name__ == "__main__":
@@ -45,10 +59,20 @@ if __name__ == "__main__":
     MAGIC = 16
 
     node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
-    net = SparseGCNModel(problem=args.problem,
-                         n_mlp_layers=4,
-                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats)),
-                         edge_dim=sum(map(lambda cls:cls.size, edge_feats)))
+    node_extra_dim=sum(map(lambda cls:cls.size, node_feats))
+    edge_dim=sum(map(lambda cls:cls.size, edge_feats))
+    if args.model == 'Graphormer':
+        net = GraphTransformer(problem=args.problem, 
+                         node_extra_dim=node_extra_dim, 
+                         edge_dim=edge_dim,
+                         hidden_dim=128,
+                         n_mlp_layers=3,
+                         n_encoder_layers=6)
+    else:
+        net = SparseGCNModel(problem=args.problem,
+                            n_mlp_layers=3,
+                            node_extra_dim=node_extra_dim,
+                            edge_dim=edge_dim)
     net.to(args.device)
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
@@ -56,7 +80,6 @@ if __name__ == "__main__":
 
     train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem)
     val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem)
-    alpha_loss = torch.nn.CrossEntropyLoss()
 
     start_epoch  = 0
     best_loss = 1e7
@@ -81,19 +104,15 @@ if __name__ == "__main__":
         edge_cw = torch.tensor(edge_cw, dtype=torch.float32, device=args.device)
         pbar = tqdm(DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=train_dataset.collate_fn))
         for index, batch in enumerate(pbar):
+            node_feat, edge_feat, label, edge_index, pad_mask = batch
+            node_feat, edge_feat, label, edge_index, pad_mask = map(lambda t: t.to(args.device), (node_feat, edge_feat, label, edge_index, pad_mask))
+            batch_size = node_feat.size(0)
             if args.problem == "cvrp":
-                node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), batch)
+                y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
+                edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask)
+                loss = edge_loss.mean() + args.ramuda * reg_loss.mean()
             else:
-                assert args.problem == "cvrptw"
-                node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), batch)
-            batch_size = node_feat.shape[0]
-            if args.problem == "cvrp":
-                y_edges, edge_loss, reg_loss,  y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-                logsoft_y_edges = y_edges[:, :, 1].squeeze().reshape(batch_size, -1, N_EDGES)
-                alpha_prob = alpha_values.max(dim=-1, keepdim=True)[0] * 1.2 - alpha_values + 1
-                alpha_prob = (alpha_prob / alpha_prob.sum(dim=-1, keepdim=True)).detach()
-                loss = edge_loss.mean() + args.ramuda * reg_loss.mean() + args.l_a * alpha_loss(logsoft_y_edges, alpha_prob).mean()
-            else:
+                #TODO: take loss calculation out of `directed_forward` function
                 assert args.problem == "cvrptw"
                 y_edges1, y_edges2, edge1_loss, edge2_loss, reg_loss = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
                 loss = (edge1_loss.mean() + edge2_loss.mean() + args.ramuda * reg_loss.mean()) / 2
@@ -118,22 +137,16 @@ if __name__ == "__main__":
             dataset_norms = []
 
             for val_batch in DataLoader(val_dataset, batch_size=args.eval_batch_size, collate_fn=val_dataset.collate_fn):
-                if args.problem == "cvrp":
-                    node_feat, edge_feat, label, edge_index, inverse_edge_index, alpha_values = map(lambda t: t.to(args.device), val_batch)
-                else:
-                    assert args.problem == "cvrptw"
-                    node_feat, edge_feat, label1, label2, edge_index,  inverse_edge_index = map(lambda t: t.to(args.device), val_batch)
-
+                node_feat, edge_feat, label, edge_index, pad_mask = batch
+                node_feat, edge_feat, label, edge_index, pad_mask = map(lambda t: t.to(args.device), (node_feat, edge_feat, label, edge_index, pad_mask))
                 with torch.no_grad():
-                    batch_size = node_feat.shape[0]
+                    batch_size = node_feat.size(0)
                     n_nodes = node_feat.size(1)
 
                     if args.problem == "cvrp":
-                        y_edges, edge_loss, reg_loss, y_nodes = net.forward(node_feat, edge_feat, edge_index, inverse_edge_index, label, edge_cw, N_EDGES)
-                        logsoft_y_edges = y_edges[:, :, 1].squeeze().reshape(batch_size, -1, N_EDGES)
-                        alpha_prob = alpha_values.max(dim=-1, keepdim=True)[0] * 1.2 - alpha_values + 1
-                        alpha_prob = (alpha_prob / alpha_prob.sum(dim=-1, keepdim=True)).detach()
-                        loss = edge_loss.mean() + args.ramuda * reg_loss.mean() + args.l_a * alpha_loss(logsoft_y_edges, alpha_prob).mean()
+                        y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
+                        edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask)
+                        loss = edge_loss.mean() + args.ramuda * reg_loss.mean()
                     else:
                         assert args.problem == "cvrptw"
                         y_edges1, y_edges2, edge1_loss, edge2_loss, reg_loss = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, label1, label2, edge_cw, N_EDGES)
@@ -141,10 +154,10 @@ if __name__ == "__main__":
                         loss = (edge1_loss.mean() + edge2_loss.mean() + args.ramuda * reg_loss.mean())/2
                     
                     if args.problem == "cvrp":
-                        y_edges = y_edges.detach().cpu().numpy()
+                        y_edge = y_edge.detach().cpu().numpy()
                         label = label.cpu().numpy()
                         rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-                        rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edges[:, :, 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+                        rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edge[..., 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
                         dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
                     statistics["val_loss"].append(loss.detach().cpu().numpy() * batch_size)
                     statistics["edge_loss"].append(edge_loss.mean().detach().cpu().numpy() * batch_size)
