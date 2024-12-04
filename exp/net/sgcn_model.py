@@ -5,6 +5,7 @@ from .sgcn_layers import SparseGCNLayer
 from .mlp import MLP
 from utils import get_problem_default_node_feat_dim
 
+# TODO: Remove this function
 def loss_edges(y_pred_edges, y_edges, edge_cw):
     y_pred_edges = y_pred_edges.permute(0, 2, 1)  # batch_size x 2 x n_node * n_edge
     loss_edges = nn.NLLLoss(edge_cw, reduction="none")(y_pred_edges, y_edges)

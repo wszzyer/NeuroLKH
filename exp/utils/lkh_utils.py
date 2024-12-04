@@ -79,7 +79,8 @@ def read_feat(feat_filename, max_nodes, n_neighbours=20):
     feat_runtime = float(lines[-2].strip())
     return edge_index, n_nodes_extend, feat_runtime
 
-def read_results(log_filename, feat_filename, max_trials):
+#TODO: generate alpha on ourselves.
+def read_solution_and_alpha(log_filename, feat_filename, max_trials):
     with open(log_filename, "r") as f:
         line = f.readlines()[-1]
         line = line.strip().split(" ")
@@ -91,6 +92,24 @@ def read_results(log_filename, feat_filename, max_trials):
             parts = list(map(int.__call__, f.readline().strip().split()))
             alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
     return result, alpha_lists
+
+def read_performance(log_filename, _, max_trials):
+    objs = []
+    penalties = []
+    runtimes = []
+    with open(log_filename, "r") as f:
+        lines = f.readlines()
+        for line in lines: # read the obj and runtime for each trial
+            if line[:6] == "-Trial":
+                line = line.strip().split(" ")
+                assert len(objs) + 1 == int(line[-4])
+                objs.append(int(line[-2]))
+                penalties.append(int(line[-3]))
+                runtimes.append(float(line[-1]))
+        final_obj = int(lines[-11].split(",")[0].split(" ")[-1])
+        assert objs[-1] == final_obj
+        return objs, penalties, runtimes
+    
 
 def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):
     n_node = candidate.shape[0]

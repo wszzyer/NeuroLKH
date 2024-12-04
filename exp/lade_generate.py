@@ -15,8 +15,9 @@ import numpy as np
 
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_feat, read_results, write_instance, write_para, write_candidate_dispather
+from utils.lkh_utils import read_solution_and_alpha, write_instance, write_para, write_candidate_dispather
 from utils.utils import map_wrapper
+from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
@@ -157,64 +158,26 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
     # temperory directories.
     tmp_dir = output_dir / "tmp"
     instance_dir = tmp_dir / dataset_name / "instance"
-    feat_param_dir = tmp_dir / dataset_name /  "featgen_para"
-    feat_dir = tmp_dir / dataset_name /  "feat"
     LKH_param_dir = tmp_dir / dataset_name /  "LKH_para"
     LKH_log_dir = tmp_dir / dataset_name /  "LKH_log"
     generated_dir = output_dir / "generated"
     
     generated_dir.mkdir(exist_ok=True)
     instance_dir.mkdir(exist_ok=True, parents=True)
-    feat_param_dir.mkdir(exist_ok=True)
-    feat_dir.mkdir(exist_ok=True)
     LKH_param_dir.mkdir(exist_ok=True)
     LKH_log_dir.mkdir(exist_ok=True)
     
     # construct node features.
-    demand = np.stack([d["DEMAND"] for d in dataset])
-    demand = np.pad(demand, [(0, 0), (0, max_nodes - n_nodes)], 'constant', constant_values=0)
-    capacity = np.zeros([n_samples, max_nodes], dtype=int)
-    capacity[:, 0] = np.array([d["CAPACITY"] for d in dataset])
-    capacity[:, n_nodes:] = capacity[:, :1]
-    assert dataset[0]["DEPOT"] == 1
-    x = np.stack([d["COORD"] for d in dataset])
-    x = np.concatenate([x, x[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], 1)
-    node_feat_list = [x, demand[:, :, None], capacity[:, :, None]]
-    if dataset[0]["TYPE"] == "CVRPTW":
-        start_end_time = np.stack([d["TIME_WINDOW_SECTION"] for d in dataset])
-        node_feat_list += [start_end_time[..., 0:1], start_end_time[..., 1:2]]
-    for feat_class in FEATS:
-        if feat_class.feat_type != "node":
-            continue
-        feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
-        # Pad with node_0 by default.
-        node_feat_list.append(np.concatenate([feat, feat[:, :1, :].repeat(max_nodes - n_nodes, axis=1)], axis=1))
-    node_feat = np.concatenate(node_feat_list, -1)
-    
-    # k-nearest neighbors, dist matrices and alpha values
-    # This can be up to 100G if you don't take care with. What a monster.
-    # edge_mask_info = np.zeros((3, n_samples, max_nodes, max_nodes), dtype=np.int32)
-    # edge_mask_info_flag and n_nodes_extend
-    # mask_flag = np.zeros(3, dtype=np.bool_)
+    node_feat = make_node_feat(dataset, n_nodes, max_nodes)
+    edge_index, node_num = make_edge_index(dataset, n_nodes, N_EDGES, extend=generate_candidate_by_LKH, max_nodes=max_nodes,
+                                           temp_dir=tmp_dir / dataset_name, pool=pool)
 
-    if generate_candidate_by_LKH:
-        # dummy_mat is matrix with duplicated depot nodes.
-        feats = tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat')
-        edge_index, n_nodes_extend, _ = list(zip(*feats))
-        edge_index = np.concatenate(edge_index, 0)
-        # edge_mask_info[0][*np.ogrid[:n_samples, :max_nodes, :1][:-1], edge_index] = 1
-        node_num = np.array(n_nodes_extend, dtype=np.int32)
-    else:
-        from feats import SSSPFeat
-        dist = np.stack([instance["ATTACHMENT"][SSSPFeat] for instance in dataset])
-        edge_index = np.argsort(dist, -1)[..., 1:1 + N_EDGES]
-        node_num = np.full((n_samples, ), n_nodes, dtype=np.int32)
-
-    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_results, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000, None, feat_dir) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_solution_and_alpha, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000, None, feat_dir) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     if not allow_extend_nodes:
         results = np.array(results)
         results[results > n_nodes] = 0
 
+    # TODO: Merge this into make_edge_index
     for problem_index, problem_alpha in enumerate(alpha_raw):
         for index, alpha_list in enumerate(problem_alpha):
             nn_list = list(edge_index[problem_index][index])
@@ -228,25 +191,7 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
                 edge_index[problem_index][index][cur] = nn_list.pop(0)
                 cur += 1
 
-    sample_index, node_index = np.ogrid[:n_samples, :max_nodes, :1][:-1]
-
-    edge_feat_list = []
-    for feat_class in FEATS:
-        if feat_class.feat_type != "edge":
-            continue
-        feat = np.stack([instance["ATTACHMENT"][feat_class] for instance in dataset])
-        dummy_mat = np.zeros((feat.shape[0], max_nodes, max_nodes), dtype=int)
-        # If no feat is generated for those extended nodes, set them the same as node 0.
-        dummy_mat[:, :feat.shape[1], :feat.shape[1]] = feat
-        dummy_mat[:, feat.shape[1]:, :] = dummy_mat[:, :1, :]
-        dummy_mat[:, :, feat.shape[1]:] = dummy_mat[:, :, :1]
-        edge_feat_list.append(dummy_mat[sample_index, node_index, edge_index])
-    edge_feat = np.stack(edge_feat_list, -1)
-
-    inverse_edge_index = -np.ones(shape=[n_samples, max_nodes, max_nodes], dtype=np.int32)
-    inverse_edge_index[sample_index, edge_index, node_index] = np.arange(N_EDGES).reshape(1, 1, -1) + node_index * N_EDGES
-    inverse_edge_index = inverse_edge_index[sample_index, node_index, edge_index]
-    
+    edge_feat = make_edge_feat(dataset)
     # construct edge label.
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
