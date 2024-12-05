@@ -1,28 +1,23 @@
 # Note! LKH can be compiled with gcc-8, and can't be compiled with gcc-10 which will raise compile error.
-import os
 import multiprocessing as mp
 import argparse
 import tqdm
 from itertools import islice
-from subprocess import check_call, DEVNULL
 from pathlib import Path
 import pickle
 import functools
-import time
 
 import pandas as pd
 import numpy as np
 
 from feats import get_all_feats
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_solution_and_alpha, write_instance, write_para, write_candidate_dispather
-from utils.utils import map_wrapper
-from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat
+from utils.lkh_utils import read_solution_and_alpha, solve_LKH
+from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat, MAX_EXTRA_NODES_RATIO
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
 generate_candidate_by_LKH = None # 是否通过 LKH 生成候选集，否则直接在 python 端生成候选集。
-max_extra_nodes_ratio = 1.15
 N_NODES = 100
 N_EDGES = 20
 fetch_lade()
@@ -39,35 +34,8 @@ def get_args():
     parser.add_argument("--citys", action="extend", nargs="+", dest="citys", help="citys to generate data")
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
     parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
-    parser.add_argument("--postfix", type=str, default="", help="dataset postfix")
     parser.add_argument("--output_dir", type=str, default="./data", help="data save folder")
     return parser.parse_args()
-
-@map_wrapper
-def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, 
-              rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, candidate2=None, n_nodes_extend=None):
-    """
-    solve LKH or NeuroLKH or generate candidate set. (if candidate is given.)
-    """
-    N_NODES = instance["COORD"].__len__() # this will be refactored.
-    para_filename = os.path.join(param_dir, instance_name + ".para")
-    log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
-    instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
-    candidate_type = "nn" if task == "FeatGenerate" else "alpha"
-    candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
-    if rerun or not os.path.isfile(log_filename):
-        write_instance(instance, instance_name, instance_filename, N_NODES)
-        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidate=N_EDGES, candidate_set_type=candidate_type)
-        if candidate is not None:
-            write_candidate_dispather[instance["TYPE"]](feat_filename = candidate_filename, candidate = candidate, candidate2 = candidate2, n_nodes_extend = n_nodes_extend)
-        f = open(log_filename, "w") if log_filename else DEVNULL
-        check_call(["./LKH", para_filename], stdout=f)
-    
-    if task == "LKH" or task == "NeuroLKH":
-        return result_hook(log_filename, candidate_filename, max_trials)
-    else:
-        assert task == "FeatGenerate"
-        return result_hook(candidate_filename, max_nodes)
 
 def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
     problem_routes, scatter_goods = problem_meta
@@ -101,7 +69,7 @@ def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, 
     instance = {}
     
     instance["TYPE"] = "CVRP" if not withTW else "CVRPTW"
-    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * max_extra_nodes_ratio - N_NODES + 1), N_NODES // 20 + 1), N_NODES)
+    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * MAX_EXTRA_NODES_RATIO - N_NODES + 1), N_NODES // 20 + 1), N_NODES)
     
     graph_coords = gdf_nodes[["y", "x"]].values
     
@@ -153,7 +121,7 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
     # configs.
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = int(n_nodes * max_extra_nodes_ratio) if allow_extend_nodes else n_nodes
+    max_nodes = int(n_nodes * MAX_EXTRA_NODES_RATIO) if allow_extend_nodes else n_nodes
     
     # temperory directories.
     tmp_dir = output_dir / "tmp"
@@ -162,17 +130,19 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
     LKH_log_dir = tmp_dir / dataset_name /  "LKH_log"
     generated_dir = output_dir / "generated"
     
-    generated_dir.mkdir(exist_ok=True)
     instance_dir.mkdir(exist_ok=True, parents=True)
     LKH_param_dir.mkdir(exist_ok=True)
     LKH_log_dir.mkdir(exist_ok=True)
+    generated_dir.mkdir(exist_ok=True)
     
     # construct node features.
     node_feat = make_node_feat(dataset, n_nodes, max_nodes)
     edge_index, node_num = make_edge_index(dataset, n_nodes, N_EDGES, extend=generate_candidate_by_LKH, max_nodes=max_nodes,
                                            temp_dir=tmp_dir / dataset_name, pool=pool)
 
-    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_solution_and_alpha, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), True, 1000, None, feat_dir) for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    # This line is coupled with make_edge_index call, as the "feat" dir is created there. However this line is to be removed.
+    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_solution_and_alpha, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
+                                                               True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     if not allow_extend_nodes:
         results = np.array(results)
         results[results > n_nodes] = 0
@@ -347,8 +317,7 @@ if __name__ == "__main__":
             val_instance = process_rdf(val_rdf, 32)
             
             
-            postfix = "_" + args.postfix if args.postfix else ""
-            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}_{N_EDGES}{postfix}"
+            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}_{N_EDGES}"
             
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
             # 目前用验证集的 instance 当成测试集，周六再改。

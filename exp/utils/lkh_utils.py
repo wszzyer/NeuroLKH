@@ -1,6 +1,8 @@
 import os
 import numpy as np
 from feats import SSSPFeat
+from utils.utils import map_wrapper
+from subprocess import check_call, DEVNULL
 
 def write_instance(instance, instance_name, instance_filename, n_nodes):
     with open(instance_filename, "w") as f:
@@ -32,7 +34,7 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
         f.write("EOF\n")
 
 def write_para(feat_filename, instance_filename, method, para_filename, candidate_set_type="nn",
-                max_trials=1000, max_candidate=20, seed=1234):
+                max_trials=1000, max_candidates=20, seed=1234):
     candidate_type_map = {
         "nn": "NEAREST-NEIGHBOR",
         "alpha": "ALPHA"
@@ -50,8 +52,8 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
                 os.remove(feat_filename)
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
             f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
-            f.write(f"MAX_CANDIDATES = {max_candidate}\n")
-        elif method == "NeuroLKH":
+            f.write(f"MAX_CANDIDATES = {max_candidates}\n")
+        elif method == "Model":
             if os.path.exists(feat_filename):
                 os.remove(feat_filename)
             f.write("SUBGRADIENT = NO\n")
@@ -62,7 +64,7 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
                 if os.path.exists(feat_filename):
                     os.remove(feat_filename)
                 f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-                f.write(f"MAX_CANDIDATES = {max_candidate}\n")
+                f.write(f"MAX_CANDIDATES = {max_candidates}\n")
             
 def read_feat(feat_filename, max_nodes, n_neighbours=20):
     edge_index = np.zeros([1, max_nodes, n_neighbours], dtype="int")
@@ -158,6 +160,29 @@ def write_candidate_CVRPTW(feat_filename, candidate, candidate2, **unused):
             f.write(line + "\n")
         f.write("-1\nEOF\n")
 
+
+@map_wrapper
+def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, max_candidates,
+              overwrite=False, max_trials=1000, candidate_dir=None, candidate=None, candidate2=None, n_nodes=None):
+    """
+    solve LKH.
+    """
+    assert task == "LKH" or task == "Model"
+    N_NODES = instance["COORD"].__len__() # this will be refactored.
+    para_filename = os.path.join(param_dir, instance_name + ".para")
+    log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
+    instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
+    candidate_type = "alpha"
+    candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
+    if overwrite or not os.path.isfile(log_filename):
+        write_instance(instance, instance_name, instance_filename, N_NODES)
+        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidates=max_candidates, candidate_set_type=candidate_type)
+        if candidate is not None:
+            write_candidate_dispather[instance["TYPE"]](feat_filename=candidate_filename, candidate=candidate, candidate2=candidate2, n_nodes_extend=n_nodes)
+        f = open(log_filename, "w") if log_filename else DEVNULL
+        check_call(["./LKH", para_filename], stdout=f)
+
+    return result_hook(log_filename, candidate_filename, max_trials)
 
 write_candidate_dispather = {
     "CVRP": write_candidate_CVRP,

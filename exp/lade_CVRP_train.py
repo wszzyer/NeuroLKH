@@ -55,7 +55,6 @@ if __name__ == "__main__":
     torch.manual_seed(114514)
     np.random.seed(114514)
 
-    N_EDGES = 20
     MAGIC = 16
 
     node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
@@ -142,6 +141,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     batch_size = node_feat.size(0)
                     n_nodes = node_feat.size(1)
+                    n_edges = edge_feat.size(1) // n_nodes
 
                     if args.problem == "cvrp":
                         y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
@@ -156,8 +156,8 @@ if __name__ == "__main__":
                     if args.problem == "cvrp":
                         y_edge = y_edge.detach().cpu().numpy()
                         label = label.cpu().numpy()
-                        rank_batch = np.zeros((batch_size * n_nodes, N_EDGES))
-                        rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edge[..., 1].reshape(-1, N_EDGES))] = np.tile(np.arange(N_EDGES), (batch_size * n_nodes, 1))
+                        rank_batch = np.zeros((batch_size * n_nodes, n_edges))
+                        rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edge[..., 1].reshape(-1, n_edges))] = np.tile(np.arange(n_edges), (batch_size * n_nodes, 1))
                         dataset_rank.append((rank_batch.reshape(-1) * label.reshape(-1)).sum() / label.sum())
                     statistics["val_loss"].append(loss.detach().cpu().numpy() * batch_size)
                     statistics["edge_loss"].append(edge_loss.mean().detach().cpu().numpy() * batch_size)

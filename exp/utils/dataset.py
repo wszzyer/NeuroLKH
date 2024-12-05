@@ -47,8 +47,8 @@ class LaDeDataset(Dataset):
         else:
             return [self.dataset[key][index] for key in self.key_list]
     
-    def __getitems__(self, indexes):
-        return [self.dataset[key][indexes] for key in self.key_list]
+    def __getitems__(self, indice):
+        return [self.dataset[key][indice] for key in self.key_list]
 
     def collate_fn(self, samples):
         node_feat = torch.tensor(samples[0], dtype=torch.float32) # B x N x feat_num
@@ -59,9 +59,10 @@ class LaDeDataset(Dataset):
         return node_feat, edge_feat, label, edge_index, pad_mask
 
 class LaDeTestDataset(Dataset):
-    def __init__(self, problem, node_feat, edge_feat, edge_index, inverse_edge_index, extra_node_feats_class, edge_feats_class):
+    def __init__(self, problem, node_feat, edge_feat, edge_index, node_num, extra_node_feats_class, edge_feats_class):
         self.problem = problem
         self.size = node_feat.shape[0]
+        self.max_node_num = node_feat.shape[1]
 
         # feature selection
         default_node_dim = get_problem_default_node_feat_dim(problem)
@@ -76,8 +77,12 @@ class LaDeTestDataset(Dataset):
             raise RuntimeError("At least one edge feat must be enabled.")
         self.node_feat = torch.tensor(node_feat, dtype=torch.float32)
         self.edge_feat = torch.tensor(edge_feat, dtype=torch.float32).flatten(1, -2) # B x (N * N) x feat_num
-        self.edge_index = torch.tensor(edge_index, dtype=torch.long).flatten(1) # B x 1000
-        self.inverse_edge_index = torch.tensor(inverse_edge_index, dtype=torch.long).flatten(1) # B x 1000
+        self.edge_index = torch.tensor(edge_index, dtype=torch.long) # B x N x N x edge_num
+        self.pad_mask = torch.tensor(np.stack([
+                np.concatenate((
+                    np.ones((n, ), dtype=np.bool_),
+                    np.zeros((self.max_node_num - n, ), dtype=np.bool_),
+            )) for n in node_num]))
            
     def __len__(self):
         return self.size
@@ -85,8 +90,8 @@ class LaDeTestDataset(Dataset):
     def __getitem__(self, index):
         return self.__getitems__(index)
     
-    def __getitems__(self, indexes):
-        return [self.node_feat[indexes], self.edge_feat[indexes], self.edge_index[indexes], self.inverse_edge_index[indexes]]
+    def __getitems__(self, indice):
+        return [self.node_feat[indice], self.edge_feat[indice], self.edge_index[indice], self.pad_mask[indice]]
     
     def collate_fn(self, samples):
         return samples

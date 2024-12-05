@@ -9,7 +9,7 @@ from feats import get_all_feats
 
 # Note: This function is duplicated intentionally here and is meant to be removed with LKH assimilation.
 @map_wrapper
-def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, max_candidate=20,
+def _solve_LKH_deprecated(task, result_hook, instance_dir, param_dir, log_dir, instance, instance_name, max_candidates=20,
               rerun=False, max_trials=1000, max_nodes=None, candidate_dir=None, candidate=None, candidate2=None, n_nodes_extend=None):
     """
     solve LKH or NeuroLKH or generate candidate set. (if candidate is given.)
@@ -23,12 +23,14 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
     if rerun or not os.path.isfile(log_filename):
         write_instance(instance, instance_name, instance_filename, N_NODES)
-        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidate=max_candidate, candidate_set_type=candidate_type)
+        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidates=max_candidates, candidate_set_type=candidate_type)
         if candidate is not None:
             write_candidate_dispather[instance["TYPE"]](feat_filename = candidate_filename, candidate = candidate, candidate2 = candidate2, n_nodes_extend = n_nodes_extend)
         f = open(log_filename, "w") if log_filename else subprocess.DEVNULL
         subprocess.check_call(["./LKH", para_filename], stdout=f) 
-    return result_hook(candidate_filename, max_nodes)
+    return result_hook(candidate_filename, max_nodes, max_candidates)
+
+MAX_EXTRA_NODES_RATIO = 1.15
 
 def make_edge_index(dataset, n_nodes, n_edges, extend=False, max_nodes=None,
                      temp_dir=None, pool=None):
@@ -39,7 +41,9 @@ def make_edge_index(dataset, n_nodes, n_edges, extend=False, max_nodes=None,
         instance_dir = temp_dir / "instance"
         feat_param_dir.mkdir(exist_ok=True)
         feat_dir.mkdir(exist_ok=True)
-        feats = tqdm.tqdm(pool.imap(solve_LKH, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat')
+        instance_dir.mkdir(exist_ok=True)
+        feats = tqdm.tqdm(pool.imap(_solve_LKH_deprecated, [("FeatGenerate", read_feat, instance_dir, feat_param_dir, None, dataset[i], str(i), n_edges,
+                                                             True, 1, max_nodes, feat_dir) for i in range(len(dataset))]), total=len(dataset), desc='Generating Feat')
         edge_index, n_nodes_extend, _ = list(zip(*feats))
         edge_index = np.concatenate(edge_index, 0)
         node_num = np.array(n_nodes_extend, dtype=np.int32)
