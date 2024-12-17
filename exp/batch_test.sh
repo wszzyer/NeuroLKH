@@ -49,5 +49,5 @@ do
     python ./lade_CVRP_test.py --problem ${problem^^} --file_path $instance \
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
             --use_feats $use_feats --output_file ./result/$data_name/$exp_name".pkl" \
-            --num_trials 35000;
+            --num_trials 35000 || exit $?;
 done

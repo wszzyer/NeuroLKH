@@ -83,5 +83,5 @@ do
         --file_path $train_instance --eval_file_path $val_instance \
         --save_dir ./saved/$exp_name/$data_name --ramuda $ramuda \
         --use_feats $use_feats --device $device \
-        --batch_size $batch_size --save_interval 50;
+        --batch_size $batch_size --save_interval 50 || exit $?;
 done
