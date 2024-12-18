@@ -44,21 +44,26 @@ batch_size=16
 while [[ $# -gt 0 ]]; do
   case $1 in
     --device)
-      device="$2"
-      shift 2
-      ;;
+        device=""
+        while [[ $# -gt 0 && "$2" != -* ]]
+        do
+            device="$device $2"
+            shift
+        done
+        shift
+        ;;
     --data_dir)
-      data_dir="$2"
-      shift 2
-      ;;
+        data_dir="$2"
+        shift 2
+        ;;
     --batch_size)
-      batch_size="$2"
-      shift 2
-      ;;
+        batch_size="$2"
+        shift 2
+        ;;
     *)
-      echo "Unknown option $1"
-      exit 1
-      ;;
+        echo "Unknown option $1"
+        exit 1
+        ;;
   esac
 done
 

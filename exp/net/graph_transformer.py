@@ -2,6 +2,7 @@ from torch import nn
 from .graph_transformer_layers import GraphEncoder
 from .mlp import MLP
 from utils import get_problem_default_node_feat_dim
+from typing import Optional, List
 
 
 class GraphTransformer(nn.Module):
@@ -9,13 +10,14 @@ class GraphTransformer(nn.Module):
                 problem: str,
                 node_extra_dim: int,
                 edge_dim: int,
-                hidden_dim: int = 128,
-                n_mlp_layers: int = 3,
+                node_hidden_dim: int = 128,
+                edge_hidden_dim: int = 64,
                 n_encoder_layers: int = 8,
-                encoder_ffn_embedding_dim: int = 512, 
+                encoder_ffn_embedding_dim: int = 256, 
                 dropout: float = 0.1,
                 attention_dropout: float = 0.1,
-                activation_dropout: float = 0
+                activation_dropout: float = 0, 
+                devices: Optional[List[str]] = None,
     ):
         super().__init__()
         
@@ -23,20 +25,22 @@ class GraphTransformer(nn.Module):
 
         self.graph_encoder = GraphEncoder(
             num_encoder_layers=n_encoder_layers,
-            embedding_dim=hidden_dim,
+            node_embedding_dim=node_hidden_dim,
+            edge_embedding_dim=edge_hidden_dim,
             ffn_embedding_dim=encoder_ffn_embedding_dim,
             num_attention_heads=4,
             dropout=dropout,
             attention_dropout=attention_dropout,
             activation_dropout=activation_dropout,
+            devices=devices
         )
 
         self.nodes_batchnorm = nn.BatchNorm1d(node_dim, affine=False)
         self.edges_batchnorm = nn.BatchNorm1d(edge_dim, affine=False)
-        self.nodes_embedding = nn.Linear(node_dim, hidden_dim, bias=False)
-        self.edges_embedding = nn.Linear(edge_dim, hidden_dim, bias=False)
+        self.nodes_embedding = nn.Linear(node_dim, node_hidden_dim, bias=False)
+        self.edges_embedding = nn.Linear(edge_dim, edge_hidden_dim, bias=False)
 
-        self.mlp = MLP(hidden_dim, 1024, 2, n_mlp_layers)
+        self.mlp = MLP(edge_hidden_dim, node_hidden_dim, 2)
 
     def forward(self, node_feat, edge_feat, edge_index, reachability):
         batch_size = node_feat.size(0)
@@ -53,6 +57,5 @@ class GraphTransformer(nn.Module):
             key_padding_mask=reachability,
             edge_index=edge_index,
         )
-        y_edges = self.mlp(e)
-
+        y_edges = self.mlp.to(e.device)(e)
         return x.transpose(0, 1), y_edges

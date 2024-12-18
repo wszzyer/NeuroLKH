@@ -99,7 +99,7 @@ def eval_model(dataset, args, work_dir, max_trials):
     net = GraphTransformer(problem=args.problem.lower(), 
                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)), 
                         edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)),
-                        hidden_dim=128,
+                        node_hidden_dim=128,
                         n_mlp_layers=3,
                         n_encoder_layers=6)
     net.to(args.device)

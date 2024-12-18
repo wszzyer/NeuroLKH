@@ -22,6 +22,7 @@ class MultiheadAttention(nn.Module):
         vdim=None,
         dropout=0.0,
         bias=True,
+        device=None
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -42,11 +43,11 @@ class MultiheadAttention(nn.Module):
             "We have not check cross-attention yet!"
         )
 
-        self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
-        self.v_proj = nn.Linear(self.vdim, embed_dim, bias=bias)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias, device=device)
+        self.v_proj = nn.Linear(self.vdim, embed_dim, bias=bias, device=device)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias, device=device)
 
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, device=device)
         self._reset_parameters()
 
     def _reset_parameters(self):

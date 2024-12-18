@@ -24,13 +24,12 @@ def get_args():
     parser.add_argument('--n_mlp_layers', type=int, default=3, help='')
     parser.add_argument('--learning_rate', type=float, default=0.00001, help='')
     parser.add_argument('--save_interval', type=int, default=25, help='')
-    parser.add_argument('--save_dir', type=str, default="saved/exp1/", help='')
-    parser.add_argument('--load_pt', type=str, default="", help='')
-    parser.add_argument('--device', type=str, default="cuda:0", help='')
+    parser.add_argument('--save_dir', type=str, default='saved/exp1/', help='')
+    parser.add_argument('--load_pt', type=str, default='', help='')
+    parser.add_argument('--device', type=str, action='extend', nargs='+', help='')
     parser.add_argument('--early_stop_thres', type=int, default=15)
     parser.add_argument('--ramuda', type=float, default=0.02)
-    parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
-    parser.add_argument('--model', default='Graphormer', choices=['Graphormer', 'SparseGCN'])
+    parser.add_argument('--use_feats', type=str, action='extend', default=['sssp'], nargs='+', help='')
     return parser.parse_args()
 
 def calculate_loss(problem, y_pred_nodes, y_pred_edges, edge_label, edge_cw, loss_mask):
@@ -40,17 +39,17 @@ def calculate_loss(problem, y_pred_nodes, y_pred_edges, edge_label, edge_cw, los
         p_edges = nn.functional.softmax(y_pred_edges, dim=-1).view(batch_size, -1, 2)
         reg_loss = torch.linalg.vector_norm(p_edges[..., 1], dim=1, ord=2)
         p_edges = torch.log(p_edges + 1e-5)
-        edge_loss = nn.NLLLoss(edge_cw, reduction="none").to("cuda:3").forward(p_edges.transpose(1, 2), edge_label.flatten(-2).to("cuda:3"))
-        edge_loss = edge_loss.reshape(batch_size, node_count, -1)[loss_mask.to("cuda:3")]
+        edge_loss = nn.NLLLoss(edge_cw, reduction="none").forward(p_edges.transpose(1, 2), edge_label.flatten(-2))
+        edge_loss = edge_loss.reshape(batch_size, node_count, -1)[loss_mask]
     else:
         raise NotImplementedError(problem)
     return edge_loss, reg_loss
-        
-
 
 if __name__ == "__main__":
     args = get_args()
     args.problem = args.problem.lower()
+    if not args.device:
+        args.device.append('cuda:0')
 
     torch.manual_seed(114514)
     np.random.seed(114514)
@@ -60,19 +59,13 @@ if __name__ == "__main__":
     node_feats, edge_feats = parse_feat_strs(args.use_feats,  print_result=True)
     node_extra_dim=sum(map(lambda cls:cls.size, node_feats))
     edge_dim=sum(map(lambda cls:cls.size, edge_feats))
-    if args.model == 'Graphormer':
-        net = GraphTransformer(problem=args.problem, 
-                         node_extra_dim=node_extra_dim, 
-                         edge_dim=edge_dim,
-                         hidden_dim=128,
-                         n_mlp_layers=3,
-                         n_encoder_layers=6)
-    else:
-        net = SparseGCNModel(problem=args.problem,
-                            n_mlp_layers=3,
-                            node_extra_dim=node_extra_dim,
-                            edge_dim=edge_dim)
-    net.to(args.device)
+    net = GraphTransformer(problem=args.problem, 
+                        node_extra_dim=node_extra_dim, 
+                        edge_dim=edge_dim,
+                        node_hidden_dim=128,
+                        n_encoder_layers=6,
+                        devices=args.device)
+    net.to(args.device[0])
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
@@ -100,15 +93,16 @@ if __name__ == "__main__":
         
         edge_labels = train_dataset.dataset["label"].flatten() if "label" in train_dataset.dataset else train_dataset.dataset["label1"].flatten()
         edge_cw = compute_class_weight("balanced", classes=np.unique(edge_labels), y=edge_labels)
-        edge_cw = torch.tensor(edge_cw, dtype=torch.float32, device=args.device)
+        edge_cw = torch.tensor(edge_cw, dtype=torch.float32, device=args.device[-1])
         pbar = tqdm(DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=train_dataset.collate_fn))
         for index, batch in enumerate(pbar):
             node_feat, edge_feat, label, edge_index, pad_mask = batch
-            node_feat, edge_feat, label, edge_index, pad_mask = map(lambda t: t.to(args.device), (node_feat, edge_feat, label, edge_index, pad_mask))
+            node_feat, edge_feat, edge_index, pad_mask = map(lambda t: t.to(args.device[0]), (node_feat, edge_feat, edge_index, pad_mask))
+            label = label.to(args.device[-1])
             batch_size = node_feat.size(0)
             if args.problem == "cvrp":
                 y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
-                edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask)
+                edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask.to(args.device[-1]))
                 loss = edge_loss.mean() + args.ramuda * reg_loss.mean()
             else:
                 #TODO: take loss calculation out of `directed_forward` function
@@ -137,7 +131,8 @@ if __name__ == "__main__":
 
             for val_batch in DataLoader(val_dataset, batch_size=args.eval_batch_size, collate_fn=val_dataset.collate_fn):
                 node_feat, edge_feat, label, edge_index, pad_mask = batch
-                node_feat, edge_feat, label, edge_index, pad_mask = map(lambda t: t.to(args.device), (node_feat, edge_feat, label, edge_index, pad_mask))
+                node_feat, edge_feat, edge_index, pad_mask = map(lambda t: t.to(args.device[0]), (node_feat, edge_feat, edge_index, pad_mask))
+                label = label.to(args.device[-1])
                 with torch.no_grad():
                     batch_size = node_feat.size(0)
                     n_nodes = node_feat.size(1)

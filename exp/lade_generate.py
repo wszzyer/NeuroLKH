@@ -31,10 +31,10 @@ def get_args():
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio")
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
-    parser.add_argument("--citys", action="extend", nargs="+", dest="citys", help="citys to generate data")
+    parser.add_argument("--cities", action="extend", nargs="+", dest="cities", help="cities to generate data")
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
     parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
-    parser.add_argument("--output_dir", type=str, default="./data", help="data save folder")
+    parser.add_argument("--output-dir", type=str, default="./data", help="data save folder")
     return parser.parse_args()
 
 def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
@@ -209,7 +209,7 @@ if __name__ == "__main__":
 
     pool = mp.Pool(args.num_cpus)
 
-    for city in args.citys:
+    for city in args.cities:
         # pickup 数据有缺失，只使用 delivery
         # accept_gps_lng/accept_gps_lat 数据完全是乱的，根本没法用。
         df = pd.read_csv(f"./data/LaDeArchive/delivery/delivery_{city}.csv")

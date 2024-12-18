@@ -6,11 +6,10 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import torch
 import torch.nn as nn
-import numpy as np
 from net.multihead_attention import MultiheadAttention
 
 class DoubleLinear(nn.Module):
@@ -19,7 +18,8 @@ class DoubleLinear(nn.Module):
         input_dim: int,
         hidden_dim: int,
         output_dim: Optional[int] = None,
-        dropout: float = 0
+        dropout: float = 0, 
+        device: Optional[str] = None
     ):
         super().__init__()
 
@@ -27,12 +27,12 @@ class DoubleLinear(nn.Module):
             output_dim = input_dim
 
         self.module_list = nn.ModuleList([
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, hidden_dim, device=device),
             nn.GELU(),
         ])
         if dropout > 0:
             self.module_list.append(nn.Dropout(dropout))
-        self.module_list.append(nn.Linear(hidden_dim, output_dim))
+        self.module_list.append(nn.Linear(hidden_dim, output_dim, device=device))
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for module in self.module_list:
             x = module(x)
@@ -41,34 +41,37 @@ class DoubleLinear(nn.Module):
 class GraphEncoderLayer(nn.Module):
     def __init__(
         self,
-        embedding_dim: int = 768,
-        ffn_embedding_dim: int = 3072,
+        node_embedding_dim: int = 128,
+        edge_embedding_dim: int = 64,
+        ffn_embedding_dim: int = 256,
         num_attention_heads: int = 8,
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
         activation_dropout: float = 0.1,
+        device: Optional[str] = None
     ) -> None:
         super().__init__()
 
         # Initialize parameters
-        self.embedding_dim = embedding_dim
         self.num_attention_heads = num_attention_heads
         self.attention_dropout = attention_dropout
 
         self.dropout_module = nn.Dropout(dropout)
 
         # Initialize blocks
-        self.self_attn = MultiheadAttention(self.embedding_dim, num_attention_heads, dropout=attention_dropout)
-        self.node_ffn = DoubleLinear(self.embedding_dim, ffn_embedding_dim, dropout=activation_dropout)
-        self.edge_ffn = DoubleLinear(self.embedding_dim, ffn_embedding_dim)
+        self.self_attn = MultiheadAttention(node_embedding_dim, num_attention_heads, dropout=attention_dropout, device=device)
+        self.node_ffn = DoubleLinear(node_embedding_dim, ffn_embedding_dim, dropout=activation_dropout, device=device)
+        self.edge_fmap = nn.Linear(edge_embedding_dim, node_embedding_dim, device=device)
+        self.edge_activitation = nn.GELU()
+        self.edge_bmap = nn.Linear(node_embedding_dim, edge_embedding_dim, device=device)
 
         # layer norm associated with the self attention layer
-        self.node_attn_norm = nn.LayerNorm((self.embedding_dim, ))
-        self.edge_attn_norm = nn.LayerNorm((self.embedding_dim, ))
+        self.node_attn_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
+        self.edge_attn_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
 
         # layer norm associated with the position wise feed-forward NN
-        self.node_final_norm = nn.LayerNorm((self.embedding_dim, ))
-        self.edge_final_norm = nn.LayerNorm((self.embedding_dim, ))
+        self.node_final_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
+        self.edge_final_norm = nn.LayerNorm((edge_embedding_dim, ), device=device)
 
     def forward(
         self,
@@ -86,6 +89,7 @@ class GraphEncoderLayer(nn.Module):
         # Attention part
         # x: T x B x C
         residual = x
+        xt = x.transpose(1, 0)
         # attn_mask = torch.zeros((batch_size, node_count, node_count), dtype=torch.bool, device=x.device)
         batch_index = torch.arange(batch_size).reshape(-1, 1, 1)
         node_index = torch.arange(node_count).reshape(1, -1, 1)
@@ -107,11 +111,6 @@ class GraphEncoderLayer(nn.Module):
         x = residual + x
         x = self.node_attn_norm(x)
 
-        weights = attn_weights.mean(dim=1).unsqueeze(-1)
-        xt = residual.transpose(1, 0)
-        e = e + weights[batch_index, edge_index, node_index] * xt[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, hidden_size)
-        e = self.edge_attn_norm(e)
-
         # MLP part
         residual = x
         x = self.node_ffn(x)
@@ -119,8 +118,14 @@ class GraphEncoderLayer(nn.Module):
         x = residual + x
         x = self.node_final_norm(x)
         
+        # Edge part
         residual = e
-        e = self.edge_ffn(e)
+        e = self.edge_fmap(e)
+        weights = attn_weights.mean(dim=1).unsqueeze(-1)
+        e = e + weights[batch_index, edge_index, node_index] * xt[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, hidden_size)
+        e = self.edge_attn_norm(e)
+        e = self.edge_activitation(e)
+        e = self.edge_bmap(e)
         e = residual + e
         e = self.edge_final_norm(e)
 
@@ -130,51 +135,39 @@ class GraphEncoder(nn.Module):
     def __init__(
         self,
         num_encoder_layers: int = 12,
-        embedding_dim: int = 768,
-        ffn_embedding_dim: int = 768,
-        num_attention_heads: int = 32,
+        node_embedding_dim: int = 128,
+        edge_embedding_dim: int = 64,
+        ffn_embedding_dim: int = 256,
+        num_attention_heads: int = 8,
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
         activation_dropout: float = 0.1,
         layerdrop: float = 0.0,
+        devices: Optional[List[str]] = None
     ) -> None:
 
         super().__init__()
         self.dropout_module = nn.Dropout(dropout)
         self.layerdrop = layerdrop
-        self.embedding_dim = embedding_dim
+        self.devices = devices
+        self.device_cap = (num_encoder_layers - 1) // len(devices) + 1 if devices else num_encoder_layers
+        node_embedding_dim = node_embedding_dim
 
         # LayerDrop Removed.
         self.layers = nn.ModuleList(
             [
-                self.build_graphormer_graph_encoder_layer(
-                    embedding_dim=self.embedding_dim,
+                GraphEncoderLayer(
+                    node_embedding_dim=node_embedding_dim,
+                    edge_embedding_dim=edge_embedding_dim,
                     ffn_embedding_dim=ffn_embedding_dim,
                     num_attention_heads=num_attention_heads,
                     dropout=self.dropout_module.p,
                     attention_dropout=attention_dropout,
                     activation_dropout=activation_dropout,
+                    device=devices[index // self.device_cap]
                 )
-                for _ in range(num_encoder_layers)
+                for index in range(num_encoder_layers)
             ]
-        )
-
-    def build_graphormer_graph_encoder_layer(
-        self,
-        embedding_dim,
-        ffn_embedding_dim,
-        num_attention_heads,
-        dropout,
-        attention_dropout,
-        activation_dropout,
-    ):
-        return GraphEncoderLayer(
-            embedding_dim=embedding_dim,
-            ffn_embedding_dim=ffn_embedding_dim,
-            num_attention_heads=num_attention_heads,
-            dropout=dropout,
-            attention_dropout=attention_dropout,
-            activation_dropout=activation_dropout,
         )
 
     def forward(
@@ -189,7 +182,15 @@ class GraphEncoder(nn.Module):
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
+        # Ugly codes for pipeline
         for index, layer in enumerate(self.layers):
+            if self.devices and index % self.device_cap == 0:
+                device = self.devices[index // self.device_cap]
+                x = x.to(device)
+                e = e.to(device)
+                key_padding_mask = key_padding_mask.to(device)
+                edge_index = edge_index.to(device)
+            layer.to(device)
             x, e = layer(
                 x,
                 e,
@@ -197,4 +198,5 @@ class GraphEncoder(nn.Module):
                 attn_mask=None, # We may use alpha-values to strengthen the attention, if only I have enough time
                 edge_index=edge_index,
             )
+            print(f"Layer {index}: {torch.cuda.memory_allocated(device) / 1e6:.1f}MiB")
         return x, e
