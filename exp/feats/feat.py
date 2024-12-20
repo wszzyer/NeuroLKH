@@ -1,31 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import List, Any
+from typing import Any, Dict
 import networkx as nx
 import geopandas as gpd
 
-class NeuralLKHFeat(ABC):
+class RoadFeat(ABC):
 
     feat_type = None
+    meta = {}
+
+    def __init__(self, data: Any):
+        self.data = data
 
     @classmethod
     @abstractmethod
-    def generate_problem_meta(cls, rdf, graph:nx.MultiDiGraph, gdf_nodes: gpd.GeoDataFrame):
+    def make_feat(cls, rdf, meta: Dict[str, Any], graph: nx.MultiDiGraph, gdf_nodes: gpd.GeoDataFrame):
         raise NotImplementedError()
-    
-    @classmethod
-    @abstractmethod
-    def generate_cvrp_instance_meta(cls, problem_meta:Any, graph: nx.MultiDiGraph, gdf_nodes: gpd.GeoDataFrame, node_indexes):
-        raise NotImplementedError()
-    
-    @classmethod
-    @abstractmethod
-    def generate_tsp_instance_meta(cls, problem_meta:Any, graph: nx.MultiDiGraph, gdf_nodes: gpd.GeoDataFrame, node_indexes):
-        raise NotImplementedError()
-    
-    @classmethod
-    @abstractmethod
-    def generate_cvrptw_instance_meta(cls, problem_meta:Any, graph: nx.MultiDiGraph, gdf_nodes: gpd.GeoDataFrame, node_indexes):
-        raise NotImplementedError()
-    
-
-

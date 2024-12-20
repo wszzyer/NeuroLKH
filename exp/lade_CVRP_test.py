@@ -91,19 +91,15 @@ def eval_model(dataset, args, work_dir, max_trials):
     feat_runtime = time.time() - feat_start_time
 
     node_feats_cls, edge_feats_cls = parse_feat_strs(args.use_feats,  print_result=True)
-    # net = SparseGCNModel(problem=args.problem.lower(),
-    #                     n_mlp_layers=4,
-    #                     node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)),
-    #                     edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)))
-    
     net = GraphTransformer(problem=args.problem.lower(), 
                         node_extra_dim=sum(map(lambda cls:cls.size, node_feats_cls)), 
                         edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)),
                         node_hidden_dim=128,
                         n_mlp_layers=3,
                         n_encoder_layers=6)
-    net.to(args.device)
-    net.load_state_dict(torch.load(args.model_path, weights_only=True))
+    # net.to(args.device)
+    # net.load_state_dict(torch.load(args.model_path, weights_only=True))
+    net.load_state_dict(torch.load(args.model_path, weights_only=True), assign=True)
     model_start_time = time.time()
     test_dataset = LaDeTestDataset(args.problem.lower(), node_feat, edge_feat, edge_index, node_num, node_feats_cls, edge_feats_cls)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)

@@ -19,7 +19,7 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
         if "SERVICE_TIME" in instance:
             f.write("SERVICE_TIME : " + str(instance["SERVICE_TIME"]) + "\n" )
         f.write("EDGE_WEIGHT_SECTION\n")
-        for line in instance["ATTACHMENT"][SSSPFeat]:
+        for line in instance["WEIGHT"]:
             f.write(" ".join(map(str, line)) + "\n")
         if "DEMAND" in instance:
             f.write("DEMAND_SECTION\n")
@@ -74,7 +74,7 @@ def read_feat(feat_filename, max_nodes, n_neighbours=20):
         for j in range(n_nodes_extend):
             line = lines[j + 1].strip().split(" ")
             line = [int(_) for _ in line]
-            assert len(line) == n_neighbours * 2 + 3
+            assert len(line) == n_neighbours * 2 + 3, f"See {feat_filename}"
             assert line[0] == j + 1
             for _ in range(n_neighbours):
                 edge_index[0, j, _] = line[3 + _ * 2] - 1

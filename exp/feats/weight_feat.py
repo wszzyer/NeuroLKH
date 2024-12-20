@@ -1,32 +1,28 @@
-from typing import Any, List
+from typing import Any
 import numpy as np
 from geopandas.geodataframe import GeoDataFrame
-from networkx import MultiDiGraph
-from .feat import NeuralLKHFeat
-from utils import calc_distmat
+import networkx as nx
+from .feat import RoadFeat
+from joblib import parallel_config
 
-class SSSPFeat(NeuralLKHFeat):
+class SSSPFeat(RoadFeat):
     feat_type = "edge"
     size = 1
 
     @classmethod
-    def generate_problem_meta(cls, rdf, graph: MultiDiGraph, gdf_nodes: GeoDataFrame) -> Any:
-        return None
+    def make_feat(cls, rdf, graph: nx.MultiDiGraph, gdf_nodes: GeoDataFrame) -> Any:
+        coords = gdf_nodes[["x", "y"]].to_numpy()
+        # Use Manhattan Distance as default
+        distmat = np.abs(coords[:, np.newaxis] - coords[np.newaxis, :]).sum(-1)
+        with parallel_config(n_jobs=max(len(graph) // 20, 20), verbose=0):
+            shortest_path = nx.all_pairs_shortest_path_length(graph)
+        mapper = dict(zip(gdf_nodes.index, np.arange(len(gdf_nodes))))
+        for u, vw_dict in shortest_path:
+            for v, w in vw_dict.items():
+                distmat[mapper[u]][mapper[v]] = w
+        cls.meta["dist"] = distmat
+        return SSSPFeat((distmat + distmat.T) / 2)
     
-    @classmethod
-    def _generate_weight(cls, graph, gdf_nodes, node_indexes):
-        distmat = calc_distmat(graph, gdf_nodes.index[node_indexes], gdf_nodes)
-        distmat = (distmat + distmat.T) / 2
-        return distmat.astype(int)
+    def __getitem__(self, node_indexes) -> Any:
+        return self.data[node_indexes][:, node_indexes]
 
-    @classmethod
-    def generate_cvrp_instance_meta(cls, problem_meta: Any, graph: MultiDiGraph, gdf_nodes: GeoDataFrame, node_indexes) -> Any:
-        return cls._generate_weight(graph, gdf_nodes, node_indexes)
-    
-    @classmethod
-    def generate_tsp_instance_meta(cls, problem_meta: Any, graph: MultiDiGraph, gdf_nodes: GeoDataFrame, node_indexes) -> Any:
-        return cls._generate_weight(graph, gdf_nodes, node_indexes)
-    
-    @classmethod
-    def generate_cvrptw_instance_meta(cls, problem_meta: Any, graph: MultiDiGraph, gdf_nodes: GeoDataFrame, node_indexes) -> Any:
-        return cls._generate_weight(graph, gdf_nodes, node_indexes)

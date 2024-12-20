@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import argparse
 import tqdm
-from itertools import islice
+from itertools import islice, chain
 from pathlib import Path
 import pickle
 import functools
@@ -10,7 +10,7 @@ import functools
 import pandas as pd
 import numpy as np
 
-from feats import get_all_feats
+from feats import get_all_feats, SSSPFeat
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_solution_and_alpha, solve_LKH
 from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat, MAX_EXTRA_NODES_RATIO
@@ -18,7 +18,6 @@ from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
 generate_candidate_by_LKH = None # 是否通过 LKH 生成候选集，否则直接在 python 端生成候选集。
-N_NODES = 100
 N_EDGES = 20
 fetch_lade()
 np.random.seed(114514)
@@ -29,7 +28,7 @@ def get_args():
     parser.add_argument("--n-nodes", type=int, default=100, help="num nodes")
     parser.add_argument("--n-edges", type=int, default=20, help="num edges")
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
-    parser.add_argument("--train-ratio", type=float, default=0.8, help="train dataset ratio")
+    parser.add_argument("--train-ratio", type=float, default=0.833, help="train dataset time ratio")
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
     parser.add_argument("--cities", action="extend", nargs="+", dest="cities", help="cities to generate data")
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
@@ -37,91 +36,80 @@ def get_args():
     parser.add_argument("--output-dir", type=str, default="./data", help="data save folder")
     return parser.parse_args()
 
-def gen_TSP_instance(graph, gdf_nodes, additional_feats, problem_meta):
-    problem_routes, scatter_goods = problem_meta
-    instance = {}
-    
-    instance["TYPE"] = "TSP"
-    graph_coords = gdf_nodes[["y", "x"]].values
-    
-    package_coords = []
-    for df in problem_routes:
-        # map package point to graph node.
-        # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
-        package_coords.append(df[["lat", "lng"]].values)
-    package_coords = np.vstack(package_coords)
-    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
-    package_to_node_dist = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1)
-    corresponding_graph_index = package_to_node_dist.argmin(axis=-1)
-    print(f"average distance from package to node {package_to_node_dist.min(axis=-1).mean()}")
-    
-    instance["COORD"] = graph_coords[corresponding_graph_index]
+def gen_TSP_instance(graph_coords, additional_statistic, rdf, gen_count=8):
+    instance = {}  
+    result = []
+    for _ in range(gen_count):
+        instance = {
+            "TYPE": "TSP"
+        }
+        sampled_df = rdf.sample(frac=0.8, replace=True)
+        problem_df = sampled_df.graph_index.value_counts(sort=False)
 
-    additional_instance_feats = {}
-    for feat_class, problem_meta in additional_feats.items():
-        additional_instance_feats[feat_class] = feat_class.generate_tsp_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
-    instance["ATTACHMENT"] = additional_instance_feats
-    
-    return instance
+        graph_index = problem_df.index.to_numpy()
+        instance["COORD"] = graph_coords[problem_df.index]
+        instance["WEIGHT"] = additional_statistic["dist"][graph_index]
+        # This is kept for further use
+        instance["SIZE"] = len(problem_df)
+        instance["GRAPH_INDEX"] = problem_df.index.to_numpy()
+    return result
 
-def gen_CVRP_instance(graph, gdf_nodes, additional_feats, additional_statistic, problem_meta, withTW = False):
-    problem_routes, scatter_goods = problem_meta
-    instance = {}
+def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, withTW = False):
+    if len(rdf) < 21: # 20 node + one depot. Ugly though.
+        return []
+    TYPE = "CVRP" if not withTW else "CVRPTW"
+    estimated_routes_num = rdf.groupby(pd.Grouper(key="delivery_time", freq="D")).apply(lambda df: df.courier_id.nunique(), include_groups=False).sum()
+    # raise RuntimeError(estimated_routes_num.sum())
+    node_count = rdf.graph_index.nunique()
+    CAPACITY = min(max(node_count // estimated_routes_num + 10, node_count // (node_count * MAX_EXTRA_NODES_RATIO - node_count + 1), node_count // 20 + 1), node_count)
     
-    instance["TYPE"] = "CVRP" if not withTW else "CVRPTW"
-    instance["CAPACITY"] = min(max(N_NODES // len(problem_routes) + 10, N_NODES // (N_NODES * MAX_EXTRA_NODES_RATIO - N_NODES + 1), N_NODES // 20 + 1), N_NODES)
-    
-    graph_coords = gdf_nodes[["y", "x"]].values
-    
-    if SAMPLE_TYPE == "subroute":
-        whole_df = pd.concat(problem_routes)
-        package_coords = whole_df[["lat", "lng"]].values
-        package_time_df = whole_df[["delivery_time", "accept_time"]]
-    else:
-        assert SAMPLE_TYPE == "scatter"
-        package_coords = scatter_goods[["lat", "lng"]].values
-        package_time_df = scatter_goods[["delivery_time", "accept_time"]]
+    result = []
+    for _ in range(gen_count):
+        instance = {
+            "TYPE": TYPE,
+            "CAPACITY": CAPACITY
+        }
+        
+        sampled_df = rdf.sample(frac=1, replace=True)
+        # problem_df = sampled_df.graph_index.value_counts(sort=False)
+        problem_df = sampled_df.graph_index
 
-    package_coords = transform_crs(package_coords, SOURCE_CRS, TARGET_CRS)
-    # map package point to graph node.
-    # 目前先按照这种简单方式进行映射，可能出现多个快递映射到同一个graph节点。
-    corresponding_graph_index = np.linalg.norm(package_coords[:, None] - graph_coords[None], axis=-1).argmin(axis=-1)
-    
-    instance["COORD"] = graph_coords[corresponding_graph_index]
-    # 现在我还没想清楚是建模为 VRP 还是 MTSP 问题。
-    # 目前做法是随机选一个位置作为 depot。后面将根据数据推断出仓库所在地，或者转换为 MTSP。
-    instance["DEPOT"] = 1
-    instance["DEMAND"] = np.ones(N_NODES, dtype=int)
-    instance["DEMAND"][instance["DEPOT"] - 1] = 0
+        # graph_index = problem_df.index.to_numpy()
+        graph_index = problem_df.to_numpy()
+        instance["COORD"] = graph_coords[graph_index]
+        instance["WEIGHT"] = additional_statistic["dist"][graph_index]
+        instance["SIZE"] = len(graph_index)
+        instance["GRAPH_INDEX"] = graph_index
+        # FIXME:Pick a depot arbitarilly.
+        # instance["DEPOT"] = np.random.choice(len(problem_df))
+        instance["DEPOT"] = 1
+        # instance["DEMAND"] = problem_df.to_numpy()
+        instance["DEMAND"] = np.ones_like((graph_index), dtype=np.int32)
+        instance["DEMAND"][instance["DEPOT"] - 1] = 0
 
-    if withTW:
-        # 时间会根据平均速度换算到距离
-        # below parameters can be tuned.
-        instance["VEHICLES"] = 20 # 这个值设大了，应该小一点。动态点数的问题目前不好解决。
-        instance["CAPACITY"] = 10000
-        twpadding = pd.Timedelta(minutes=15)
-        # SERVICE_TIME don't work in CVRPTW problem.
-        instance["SERVICE_TIME"] = pd.Timedelta(minutes=5).total_seconds()
-        tw_begin = (package_time_df["delivery_time"] - package_time_df["accept_time"] - twpadding).clip(lower=pd.Timedelta(0))
-        tw_end = tw_begin + twpadding * 2
-        tw_begin_dist = tw_begin.dt.total_seconds() * additional_statistic["velocity"]
-        tw_end_dist = tw_end.dt.total_seconds() * additional_statistic["velocity"]
-        latest = (tw_end.max().total_seconds() + 1000000) * additional_statistic["velocity"]
-        instance["TIME_WINDOW_SECTION"] = np.stack([tw_begin_dist, tw_end_dist], axis=1)
-        instance["TIME_WINDOW_SECTION"][instance["DEPOT"] - 1] = [0, latest]
+        if withTW:
+            # 时间会根据平均速度换算到距离
+            # below parameters can be tuned.
+            instance["VEHICLES"] = 20 # 这个值设大了，应该小一点。动态点数的问题目前不好解决。
+            instance["CAPACITY"] = 10000
+            twpadding = pd.Timedelta(minutes=15)
+            # SERVICE_TIME don't work in CVRPTW problem.
+            instance["SERVICE_TIME"] = pd.Timedelta(minutes=5).total_seconds()
+            tw_begin = (sampled_df["delivery_time"] - sampled_df["accept_time"] - twpadding).clip(lower=pd.Timedelta(0))
+            tw_end = tw_begin + twpadding * 2
+            tw_begin_dist = tw_begin.dt.total_seconds() * additional_statistic["velocity"]
+            tw_end_dist = tw_end.dt.total_seconds() * additional_statistic["velocity"]
+            latest = (tw_end.max().total_seconds() + 1000000) * additional_statistic["velocity"]
+            instance["TIME_WINDOW_SECTION"] = np.stack([tw_begin_dist, tw_end_dist], axis=1)
+            instance["TIME_WINDOW_SECTION"][instance["DEPOT"] - 1] = [0, latest]
+        result.append(instance)
+    return result
 
-    additional_instance_feats = {}
-    for feat_class, problem_meta in additional_feats.items():
-        additional_instance_feats[feat_class] = feat_class.generate_cvrp_instance_meta(problem_meta, graph, gdf_nodes, corresponding_graph_index)
-    instance["ATTACHMENT"] = additional_instance_feats
-    
-    return instance
-
-def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
-    # configs.
+def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
     # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = int(n_nodes * MAX_EXTRA_NODES_RATIO) if allow_extend_nodes else n_nodes
+    max_nodes = np.max([instance["SIZE"] for instance in dataset])
+    max_nodes = int(max_nodes * MAX_EXTRA_NODES_RATIO) if allow_extend_nodes else max_nodes
     
     # temperory directories.
     tmp_dir = output_dir / "tmp"
@@ -136,8 +124,8 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
     generated_dir.mkdir(exist_ok=True)
     
     # construct node features.
-    node_feat = make_node_feat(dataset, n_nodes, max_nodes)
-    edge_index, node_num = make_edge_index(dataset, n_nodes, N_EDGES, extend=generate_candidate_by_LKH, max_nodes=max_nodes,
+    node_feat = make_node_feat(dataset, additional_feats, max_nodes)
+    edge_index, node_num = make_edge_index(dataset, additional_feats, N_EDGES, extend=generate_candidate_by_LKH, max_nodes=max_nodes,
                                            temp_dir=tmp_dir / dataset_name, pool=pool)
 
     # This line is coupled with make_edge_index call, as the "feat" dir is created there. However this line is to be removed.
@@ -145,7 +133,8 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
                                                                True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     if not allow_extend_nodes:
         results = np.array(results)
-        results[results > n_nodes] = 0
+        raise RuntimeError(result.shape, node_num.shape)
+        results[results > node_num] = 0
 
     # TODO: Merge this into make_edge_index
     for problem_index, problem_alpha in enumerate(alpha_raw):
@@ -161,7 +150,7 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
                 edge_index[problem_index][index][cur] = nn_list.pop(0)
                 cur += 1
 
-    edge_feat = make_edge_feat(dataset)
+    edge_feat = make_edge_feat(dataset, additional_feats, max_nodes, edge_index)
     # construct edge label.
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
@@ -192,7 +181,6 @@ def generate_dataset(dataset, n_nodes, dataset_name, output_dir):
 if __name__ == "__main__":
     # global variables
     args = get_args()
-    N_NODES = args.n_nodes
     N_EDGES = args.n_edges
     SAMPLE_TYPE = args.sample_type
     FEATS = get_all_feats()
@@ -223,25 +211,28 @@ if __name__ == "__main__":
             bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
-            graph, gdf_nodes, gdf_edges = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
+            graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
             rdf = rdf.drop(rdf.index[(rdf["lat"] > bbox[0]) | (rdf["lat"] < bbox[1]) | (rdf["lng"] > bbox[2]) | (rdf["lng"] < bbox[3])])
             print(f"region {city}-{region_id}: {len(rdf)} tasks, {len(graph)} nodes.")
+        
+            # Will the behavior of deliveryman result in "Data Leak"? I reckon the answer is no, imasara.
+            # LaDe dataset last for 6 months, so we just use the ratio 5:1 by default here.
+            start_day = rdf.delivery_time.min().round("D")
+            interval = (rdf.delivery_time.max() - start_day).round("D")
+            split_day = (start_day + interval * args.train_ratio).round("D")
             
-            # 目前采用按时间切分训练集和验证集，但是训练集和验证集中存在相同快递员，神经网络可以提前学到某些快递员的行为特征，实际上不应该如此。
-            # 后面也可以尝试按快递员切分训练集和验证集，以解决这个问题。
-            # 目前采样快递员配送任务时用的是可放回采样，某一个任务可能被采样多次。
-            rdf = rdf.sort_values("delivery_time")
-            split_index = int(len(rdf) * args.train_ratio)
-            train_rdf = rdf.iloc[:split_index]
-            val_rdf= rdf.iloc[split_index:]
+            # map package point to graph node.
+            package_coords = transform_crs(rdf[["lat", "lng"]].to_numpy(), SOURCE_CRS, TARGET_CRS)
+            graph_coords = gdf_nodes[["y", "x"]].to_numpy()
+            corresponding_graph_index = np.linalg.norm(package_coords[:, np.newaxis, :] - graph_coords[np.newaxis, ...], axis=-1).argmin(axis=-1)
+            rdf["graph_index"] = corresponding_graph_index
 
-            # generate additional features
-            additional_meta = {}
-            for feat in FEATS:
-                additional_meta[feat] = feat.generate_problem_meta(rdf, graph, gdf_nodes)
+            train_rdf = rdf[rdf.delivery_time <= split_day]
+            val_rdf= rdf[rdf.delivery_time > split_day]
             
             # generate dataset statistic informations
             additional_statistic = {}
+            additional_statistic["dist"] = SSSPFeat.make_feat(rdf, graph, gdf_nodes)
             if args.problem == "CVRPTW":
                 # this process is too slow, use calculated velocity by yt-111
                 additional_statistic["velocity"] = 1.3475401310142756 # meter/second
@@ -265,7 +256,8 @@ if __name__ == "__main__":
                 # velocity = (adjacent_length / (adjacent_time.astype(int)/1e9) )[valid_mask].mean()
                 # additional_statistic["velocity"] = velocity
 
-            def process_rdf(rdf, n_samples):
+            def sample_instance(rdf, windows=["D", "3D"], full=False):
+                rdf = rdf.reset_index(drop=True)
                 sub_routes = []
                 for courier_id, courier_rdf in rdf.groupby("courier_id"):
                     # courier_rdf currently is sorted by delivery time.
@@ -275,33 +267,12 @@ if __name__ == "__main__":
                 # 目前仅支持点数固定的问题。实际问题中点数往往是不固定的。
                 print(f"region {city}-{region_id}: {len(sub_routes)} sub_routes.")
 
-
-                # generate common part of instances
-                problems_meta = []
-                for problem_index in range(n_samples):
-                    # generate instance using sub routes.
-                    problem_routes = []
-                    problem_size_so_far = 0
-                    selected_flag = np.zeros(len(sub_routes), dtype=int)
-                    while True:
-                        i = np.random.randint(0, len(sub_routes))
-                        if selected_flag[i] == 1:
-                            continue
-                        selected_flag[i] = 1
-                        
-                        if problem_size_so_far + len(sub_routes) > args.n_nodes:
-                            partial_tour_df = sub_routes[i].iloc[:args.n_nodes - problem_size_so_far]
-                        else:
-                            partial_tour_df = sub_routes[i]
-                        problem_routes.append(partial_tour_df)
-                        problem_size_so_far += len(partial_tour_df)
-                        
-                        if problem_size_so_far == args.n_nodes:
-                            break
-                        
-                    # generate instance using scatter goods
-                    scatter_goods = rdf.loc[np.random.choice(rdf.index, size = N_NODES, replace=False)]
-                    problems_meta.append((problem_routes, scatter_goods))
+                instance_list = []
+                for window in windows:
+                    grouper = pd.Grouper(key="delivery_time", freq=window)
+                    instance_list += [df for (_, df) in rdf.groupby(grouper)]
+                if full:
+                    instance_list.append(rdf) 
                 
                 # generate spcific part of instances 
                 generate_function = {
@@ -310,17 +281,14 @@ if __name__ == "__main__":
                     "CVRPTW": functools.partial(gen_CVRP_instance, withTW = True),
                     "PDP": None
                 }[args.problem]
-                return list(tqdm.tqdm(pool.imap(functools.partial(generate_function, graph, gdf_nodes, additional_meta, additional_statistic), problems_meta,
-                                                 chunksize=min(32, n_samples // 8)), desc='Generating Instance', total=n_samples))
+                return list(chain(*tqdm.tqdm(pool.imap(functools.partial(generate_function, graph_coords, additional_statistic), instance_list,
+                                                 chunksize=32), desc='Generating Instance', total=len(instance_list))))
                 
-            train_instance = process_rdf(train_rdf, args.n_samples)
-            val_instance = process_rdf(val_rdf, 32)
+            train_instance = sample_instance(train_rdf)
+            val_instance = sample_instance(val_rdf)
             
-            
-            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_NODES}_{N_EDGES}"
-            
+            dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_EDGES}"
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
-            # 目前用验证集的 instance 当成测试集，周六再改。
             raw_dir = output_dir / "raw_instance"
             raw_dir.mkdir(exist_ok=True)
             with open(raw_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
@@ -328,6 +296,12 @@ if __name__ == "__main__":
             with open(raw_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
                 pickle.dump(val_instance, f)
             
-            generate_dataset(train_instance, N_NODES, dataset_name_template % "train", output_dir)
-            generate_dataset(val_instance, N_NODES, dataset_name_template % "val", output_dir)
+            # generate additional features
+            additional_feats = {}
+            for feat in FEATS:
+                additional_feats[feat] = feat.make_feat(rdf, graph, gdf_nodes)
+            
+            # And then generate dataset for training. By the way, why?
+            generate_dataset(train_instance, additional_feats, dataset_name_template % "train", output_dir)
+            generate_dataset(val_instance, additional_feats, dataset_name_template % "val", output_dir)
     
