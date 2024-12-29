@@ -358,7 +358,6 @@ extern int Trial;      /* Ordinal number of the current trial */
 extern GainType TSPTW_CurrentMakespanCost;
 extern int TSPTW_Makespan;
 extern int *SavedD;
-extern int GeneratingFeature;
 
 /* The following variables are read by the functions ReadParameters and 
    ReadProblem: */

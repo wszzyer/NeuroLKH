@@ -63,7 +63,7 @@ _OBJ = Activate.o AddCandidate.o AddExtraCandidates.o                  \
        TrimCandidateSet.o TSPDL_InitialTour.o TSPTW_MakespanCost.o     \
 	   TSPTW_Reduce.o VRPB_Reduce.o BIT.o                              \
        WriteCandidates.o WritePenalties.o WriteTour.o                  \
-       MergeWithTourGPX2.o gpx.o LKH.o FeatureGenerate.o
+       MergeWithTourGPX2.o gpx.o LKH.o
 
 OBJ = $(patsubst %,$(ODIR)/%,$(_OBJ))
 

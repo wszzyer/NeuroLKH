@@ -556,7 +556,6 @@ void ReadParameters()
     TimeLimit = DBL_MAX;
     TraceLevel = 1;
     TSPTW_Makespan = 0;
-    GeneratingFeature = 0;
 
     if (ParameterFileName) {
         if (!(ParameterFile = fopen(ParameterFileName, "r")))
@@ -1034,8 +1033,6 @@ void ReadParameters()
             if (!(Token = strtok(0, Delimiters)) ||
                 !sscanf(Token, "%u", &Seed))
                 eprintf("SEED: integer expected");
-        } else if (!strcmp(Keyword, "GERENATINGFEATURE")) {
-            GeneratingFeature = 1;
         } else if (!strcmp(Keyword, "FEAT_FILE")) {
             if (!(FeatFileName = GetFileName(0)))
                 eprintf("FEAT_FILE: string expected");

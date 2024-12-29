@@ -15,7 +15,6 @@
  * The CreateCandidateSet function itself is called from LKHmain.
  */
 
-int GeneratingFeature;
 
 void CreateCandidateSet()
 {
@@ -46,11 +45,6 @@ void CreateCandidateSet()
     }
     if (TraceLevel >= 2)
         printff("Creating candidates ...\n");
-    if (GeneratingFeature) {
-        CreateNearestNeighborCandidateSet(MaxCandidates);
-        AddTourCandidates();
-        goto End_CreateCandidateSet;
-    }
     if (MaxCandidates > 0 &&
         (CandidateSetType == QUADRANT || CandidateSetType == NN)) {
         ReadPenalties();

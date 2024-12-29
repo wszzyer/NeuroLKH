@@ -25,15 +25,6 @@ int main(int argc, char *argv[])
     MergeWithTour = Recombination == IPT ? MergeWithTourIPT :
         MergeWithTourGPX2;
     ReadProblem();
-    if (GeneratingFeature && ProblemType == TSP) {
-	printf ("Generating Features\n");
-	featureGenerate();
-	return 0;
-    }
-    if (GeneratingFeature) {
-	CreateCandidateSet();
-	return 0;
-    }
     if (SubproblemSize > 0) {
         if (DelaunayPartitioning)
             SolveDelaunaySubproblems();

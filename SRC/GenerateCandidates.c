@@ -109,11 +109,11 @@ void GenerateCandidates(int MaxCandidates, GainType MaxAlpha,
                     if (c)
                         d = D(From, To);
                 } else if (c) {
-                    if ((GeneratingFeature == 0) && (a > MaxAlpha ||
+                    if (a > MaxAlpha ||
                         (Count == MaxCandidates &&
                          (a > (NFrom - 1)->Alpha ||
                           (a == (NFrom - 1)->Alpha
-                           && d >= (NFrom - 1)->Cost)))))
+                           && d >= (NFrom - 1)->Cost))))
                         continue;
                     if (To == From->Dad) {
                         d = From->Cost;
