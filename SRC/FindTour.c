@@ -120,9 +120,9 @@ GainType FindTour()
                 SwapCandidateSets();
         }
 	if (ProblemType == TSP)
-	    printf("-Trial %d %d %f\n", Trial, BetterCost, GetTime() - StartTime);
+	    printf("-Trial %d %lld %f\n", Trial, BetterCost, GetTime() - StartTime);
         else
-	    printf("-Trial %d %d %d %f\n", Trial, BetterPenalty, BetterCost, GetTime() - StartTime);
+	    printf("-Trial %d %lld %lld %f\n", Trial, BetterPenalty, BetterCost, GetTime() - StartTime);
     }
     if (BackboneTrials > 0 && BackboneTrials < MaxTrials) {
         if (Trial > BackboneTrials ||
