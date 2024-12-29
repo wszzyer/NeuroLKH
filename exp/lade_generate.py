@@ -13,11 +13,10 @@ import numpy as np
 from feats import get_all_feats, SSSPFeat
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
 from utils.lkh_utils import read_solution_and_alpha, solve_LKH
-from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat, MAX_EXTRA_NODES_RATIO
+from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
-generate_candidate_by_LKH = None # 是否通过 LKH 生成候选集，否则直接在 python 端生成候选集。
 N_EDGES = 20
 fetch_lade()
 np.random.seed(114514)
@@ -60,8 +59,11 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, with
     TYPE = "CVRP" if not withTW else "CVRPTW"
     estimated_routes_num = rdf.groupby(pd.Grouper(key="delivery_time", freq="D")).apply(lambda df: df.courier_id.nunique(), include_groups=False).sum()
     # raise RuntimeError(estimated_routes_num.sum())
-    node_count = rdf.graph_index.nunique()
-    CAPACITY = min(max(node_count // estimated_routes_num + 10, node_count // (node_count * MAX_EXTRA_NODES_RATIO - node_count + 1), node_count // 20 + 1), node_count)
+    # node_count = rdf.graph_index.nunique()
+    node_count = len(rdf)
+    MIN_CAPACITY = max(5, int(node_count * 0.05))
+    MAX_CAPACITY = min(100, int(node_count * 0.2))
+    CAPACITY = min(max(node_count // estimated_routes_num + 5, MIN_CAPACITY), MAX_CAPACITY)
     
     result = []
     for _ in range(gen_count):
@@ -106,10 +108,15 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, with
     return result
 
 def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
-    # n_nodes 包含仓库节点, which is differ from original NeuroLKH.
+    # n_nodes 包含仓库节点, which is different from original NeuroLKH.
     n_samples = len(dataset)
-    max_nodes = np.max([instance["SIZE"] for instance in dataset])
-    max_nodes = int(max_nodes * MAX_EXTRA_NODES_RATIO) if allow_extend_nodes else max_nodes
+    # LKH Exodus Note: See MTSP2TSP.c:33 and ReadProblem.c:524.
+    if allow_extend_nodes:
+        node_num = np.ceil([instance["SIZE"] + np.sum(instance["DEMAND"]) / instance["CAPACITY"] for instance in dataset]) - 1
+    else:
+        node_num = np.array([instance["SIZE"] for instance in dataset])
+    node_num = node_num.astype(np.int32)
+    max_nodes = np.max(node_num)
     
     # temperory directories.
     tmp_dir = output_dir / "tmp"
@@ -125,8 +132,8 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
     
     # construct node features.
     node_feat = make_node_feat(dataset, additional_feats, max_nodes)
-    edge_index, node_num = make_edge_index(dataset, additional_feats, N_EDGES, extend=generate_candidate_by_LKH, max_nodes=max_nodes,
-                                           temp_dir=tmp_dir / dataset_name, pool=pool)
+    edge_index = make_edge_index(dataset, additional_feats, N_EDGES, extend=allow_extend_nodes, max_nodes=max_nodes, node_num=node_num)
+    print("Should we stop?")
 
     # This line is coupled with make_edge_index call, as the "feat" dir is created there. However this line is to be removed.
     results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_solution_and_alpha, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
@@ -187,11 +194,9 @@ if __name__ == "__main__":
     if args.problem == "CVRPTW":
         allow_extend_nodes = False
         split_edge_label = True
-        generate_candidate_by_LKH = False
     else:
         allow_extend_nodes = True
         split_edge_label = False
-        generate_candidate_by_LKH = True
     trajectory_df = None
     output_dir = Path(args.output_dir).resolve()
 
