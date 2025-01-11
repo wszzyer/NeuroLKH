@@ -173,7 +173,8 @@ int CandidateSetSymmetric, CandidateSetType, Capacity,
     PatchingCExtended, PatchingCRestricted,
     ProblemType, RiskThreshold,
     RohePartitioning, Salesmen, SierpinskiPartitioning,
-    SubproblemBorders, SubproblemsCompressed, WeightType, WeightFormat;
+    SubproblemBorders, SubproblemsCompressed, 
+    UseExternalSpecial, WeightType, WeightFormat;
 
 FILE *ParameterFile, *ProblemFile, *PiFile, *InputTourFile, *FeatFile,
     *InitialTourFile, *SubproblemTourFile, **MergeTourFile;

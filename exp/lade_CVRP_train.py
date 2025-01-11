@@ -140,7 +140,7 @@ if __name__ == "__main__":
 
                     if args.problem == "cvrp":
                         y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
-                        edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask)
+                        edge_loss, reg_loss = calculate_loss(args.problem, y_node, y_edge, label, edge_cw, pad_mask.to(args.device[-1]))
                         loss = edge_loss.mean() + args.ramuda * reg_loss.mean()
                     else:
                         assert args.problem == "cvrptw"

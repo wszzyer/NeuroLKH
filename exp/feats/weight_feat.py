@@ -15,7 +15,7 @@ class SSSPFeat(RoadFeat):
         # Use Manhattan Distance as default
         distmat = np.abs(coords[:, np.newaxis] - coords[np.newaxis, :]).sum(-1)
         with parallel_config(n_jobs=max(len(graph) // 20, 20), verbose=0):
-            shortest_path = nx.all_pairs_shortest_path_length(graph)
+            shortest_path = nx.all_pairs_dijkstra_path_length(graph)
         mapper = dict(zip(gdf_nodes.index, np.arange(len(gdf_nodes))))
         for u, vw_dict in shortest_path:
             for v, w in vw_dict.items():

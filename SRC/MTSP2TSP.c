@@ -74,7 +74,7 @@ void MTSP2TSP()
         }
         Dimension = DimensionSaved = NewDimension;
         if (ProblemType != CTSP && Salesmen <= Dim && MTSPMinSize > 0 &&
-            !AnyFixed) {
+            !AnyFixed && !UseExternalSpecial) {
             HeapMake(Dim - 1);
             for (i = 1; i <= Dim; i++) {
                 N = &NodeSet[i];

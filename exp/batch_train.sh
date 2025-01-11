@@ -76,12 +76,14 @@ do
         continue
     fi
     val_instance=${train_instance/train/val}
-    data_name=$(awk -F _ '{print $4"_"$6"_"$7}' <<< $train_file_name | awk -F . '{print $1}')
+    data_name=$(awk -F _ '{print $4"_"$5"_"$6}' <<< $train_file_name | awk -F . '{print $1}')
     if [[ ! -d "./saved/$exp_name" ]]
     then
         mkdir "./saved/$exp_name"
-    else
-        rm -rf "./saved/$exp_name/*"
+    fi
+    if [[ -d ./saved/$exp_name/$data_name ]]
+    then
+        continue
     fi
     python ./lade_CVRP_train.py \
         --problem ${problem^^} \

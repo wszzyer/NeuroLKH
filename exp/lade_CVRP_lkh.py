@@ -5,6 +5,7 @@ from multiprocessing import Pool
 import argparse
 import pickle
 from pathlib import Path
+from functools import partial
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -26,7 +27,7 @@ def eval_lkh(dataset, work_dir, max_candidates, max_trials, pool=None, ignore_ca
     LKH_log_dir.mkdir(exist_ok=True)
 
     if pool:
-        pmap = pool.imap
+        pmap = partial(pool.imap, chunksize=4)
     else:
         pmap = map
 
@@ -46,3 +47,4 @@ if __name__ == "__main__":
     
     file = open(args.output_file, mode='wb')
     pickle.dump(lkh_result, file)
+    pool.close()

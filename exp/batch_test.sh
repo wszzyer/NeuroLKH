@@ -40,14 +40,18 @@ do
     then
         continue
     fi
-    data_name=$(awk -F _ '{print $6"_"$8"_"$9}' <<< $instance | awk -F . '{print $1}')
+    data_name=$(awk -F _ '{print $6"_"$7"_"$8}' <<< $instance | awk -F . '{print $1}')
     if [[ ! -d "./result/$data_name" ]]
     then
         echo "Please run LKH for $data_name first!"
         exit 1
     fi
-    python ./lade_CVRP_test.py --problem ${problem^^} --file_path $instance \
+    if [[ ! -d "./saved/$exp_name" || -d "./result/$data_name/$exp_name.pkl" ]]
+    then
+        continue
+    fi
+    python ./lade_CVRP_test.py --problem ${problem^^} --data_path $instance --geo_path ${instance/val/geo} \
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
             --use_feats $use_feats --output_file ./result/$data_name/$exp_name".pkl" \
-            --num_trials 35000 || exit $?;
+            --num_trials 30000 --num_candidates 10 || exit $?;
 done

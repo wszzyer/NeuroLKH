@@ -1,5 +1,5 @@
 # Note! LKH can be compiled with gcc-8, and can't be compiled with gcc-10 which will raise compile error.
-import multiprocessing as mp
+import multiprocess as mp
 import argparse
 import tqdm
 from itertools import islice, chain
@@ -11,9 +11,9 @@ import pandas as pd
 import numpy as np
 
 from feats import get_all_feats, SSSPFeat
-from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, decode_gps_traj, encode_gps_traj, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_solution_and_alpha, solve_LKH
-from utils.generate_utils import make_edge_index, make_node_feat, make_edge_feat
+from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
+from utils.lkh_utils import read_solution, solve_LKH
+from utils.generate_utils import make_node_feat, make_edge_feat
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
@@ -46,6 +46,7 @@ def gen_TSP_instance(graph_coords, additional_statistic, rdf, gen_count=8):
         problem_df = sampled_df.graph_index.value_counts(sort=False)
 
         graph_index = problem_df.index.to_numpy()
+        raise RuntimeError("Not Sync with CVRP!")
         instance["COORD"] = graph_coords[problem_df.index]
         instance["WEIGHT"] = additional_statistic["dist"][graph_index]
         # This is kept for further use
@@ -53,8 +54,8 @@ def gen_TSP_instance(graph_coords, additional_statistic, rdf, gen_count=8):
         instance["GRAPH_INDEX"] = problem_df.index.to_numpy()
     return result
 
-def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, withTW = False):
-    if len(rdf) < 21: # 20 node + one depot. Ugly though.
+def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_frac=0.9, withTW = False):
+    if len(rdf) * gen_frac < 21: # 20 node + one depot. Ugly though.
         return []
     TYPE = "CVRP" if not withTW else "CVRPTW"
     estimated_routes_num = rdf.groupby(pd.Grouper(key="delivery_time", freq="D")).apply(lambda df: df.courier_id.nunique(), include_groups=False).sum()
@@ -72,22 +73,21 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, with
             "CAPACITY": CAPACITY
         }
         
-        sampled_df = rdf.sample(frac=1, replace=True)
-        # problem_df = sampled_df.graph_index.value_counts(sort=False)
-        problem_df = sampled_df.graph_index
+        sampled_df = rdf.sample(frac=gen_frac, replace=True)
 
-        # graph_index = problem_df.index.to_numpy()
-        graph_index = problem_df.to_numpy()
-        instance["COORD"] = graph_coords[graph_index]
-        instance["WEIGHT"] = additional_statistic["dist"][graph_index]
+        graph_index = sampled_df.graph_index.to_numpy()
+        instance["COORD"] = transform_crs(sampled_df[["lat", "lng"]].to_numpy(), SOURCE_CRS, TARGET_CRS)
+        # Use merged weights to avoid zeros. Even though they act like nothing but zeros.
+        weight = additional_statistic["dist"][graph_index]
+        diff = np.abs(instance["COORD"] - graph_coords[graph_index]).sum(axis=-1)
+        instance["WEIGHT"] = weight + diff[np.newaxis, :] + diff[:, np.newaxis]
         instance["SIZE"] = len(graph_index)
         instance["GRAPH_INDEX"] = graph_index
-        # FIXME:Pick a depot arbitarilly.
-        # instance["DEPOT"] = np.random.choice(len(problem_df))
-        instance["DEPOT"] = 1
-        # instance["DEMAND"] = problem_df.to_numpy()
+        instance["DEPOT"] = np.random.choice(len(sampled_df)) + 1
         instance["DEMAND"] = np.ones_like((graph_index), dtype=np.int32)
         instance["DEMAND"][instance["DEPOT"] - 1] = 0
+        min_depot_num = int(np.ceil(np.sum(instance["DEMAND"]) / instance["CAPACITY"]))
+        instance["SPECIAL"] = np.argsort(instance["WEIGHT"][instance["DEPOT"] - 1])[1:min_depot_num+ 1] + 1
 
         if withTW:
             # 时间会根据平均速度换算到距离
@@ -132,32 +132,16 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
     
     # construct node features.
     node_feat = make_node_feat(dataset, additional_feats, max_nodes)
-    edge_index = make_edge_index(dataset, additional_feats, N_EDGES, extend=allow_extend_nodes, max_nodes=max_nodes, node_num=node_num)
-    print("Should we stop?")
+    edge_feat, edge_index = make_edge_feat(dataset, additional_feats, max_nodes, N_EDGES, extend=allow_extend_nodes, node_num=node_num, pool=pool)
 
-    # This line is coupled with make_edge_index call, as the "feat" dir is created there. However this line is to be removed.
-    results, alpha_raw = zip(*tqdm.tqdm(pool.imap(solve_LKH, [("LKH", read_solution_and_alpha, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
-                                                               True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
+    # The sizes of the problems varies greatly. A large chunksize will cause great inbalance between threads.
+    results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LabelGen", read_solution, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
+                                        True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     if not allow_extend_nodes:
         results = np.array(results)
         raise RuntimeError(result.shape, node_num.shape)
         results[results > node_num] = 0
 
-    # TODO: Merge this into make_edge_index
-    for problem_index, problem_alpha in enumerate(alpha_raw):
-        for index, alpha_list in enumerate(problem_alpha):
-            nn_list = list(edge_index[problem_index][index])
-            cur = 0
-            for target, alpha in alpha_list:
-                if target in nn_list:
-                    nn_list.remove(target)
-                edge_index[problem_index][index][cur] = target
-                cur += 1
-            while cur < N_EDGES:
-                edge_index[problem_index][index][cur] = nn_list.pop(0)
-                cur += 1
-
-    edge_feat = make_edge_feat(dataset, additional_feats, max_nodes, edge_index)
     # construct edge label.
     label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
     label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
@@ -214,6 +198,7 @@ if __name__ == "__main__":
             map_name = f"{city}_{region_id}"
             coords = rdf[["lat", "lng"]].to_numpy()
             bbox = get_bbox_from_coords(coords, paddings=np.array([0.01, 0.01]))
+            print(f"Generating graph from {bbox}")
             if not has_map(map_name):
                 fetch_shapefile_osm_osmnx(place=bbox, map_name=map_name)
             graph, gdf_nodes, _ = load_shapefile_osm_osmnx(map_name, target_crs=TARGET_CRS)
@@ -300,7 +285,8 @@ if __name__ == "__main__":
                 pickle.dump(train_instance, f)
             with open(raw_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
                 pickle.dump(val_instance, f)
-            
+            with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
+                pickle.dump((rdf, graph, gdf_nodes), f)
             # generate additional features
             additional_feats = {}
             for feat in FEATS:
@@ -309,4 +295,4 @@ if __name__ == "__main__":
             # And then generate dataset for training. By the way, why?
             generate_dataset(train_instance, additional_feats, dataset_name_template % "train", output_dir)
             generate_dataset(val_instance, additional_feats, dataset_name_template % "val", output_dir)
-    
+    pool.close()

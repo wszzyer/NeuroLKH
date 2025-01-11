@@ -9,7 +9,7 @@ for instance in $(ls "$data_dir"/raw_instance/* |grep val)
 do
     instance_name=$(awk -F / "{print \$NF;}" <<< $instance)
     problem=$(awk -F _ "{print \$1}" <<< $instance_name)
-    data_name=$(awk -F _ '{print $5"_"$7"_"$8}'  <<< $instance_name | awk -F . '{print $1}')
+    data_name=$(awk -F _ '{print $5"_"$6"_"$7}'  <<< $instance_name | awk -F . '{print $1}')
     if [[ ! -d "./result/$data_name" ]]
     then
         mkdir "./result/$data_name"

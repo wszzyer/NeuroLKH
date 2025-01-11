@@ -4,7 +4,7 @@ from feats import SSSPFeat
 from utils.utils import map_wrapper
 from subprocess import check_call, DEVNULL
 
-def write_instance(instance, instance_name, instance_filename, n_nodes):
+def write_instance(instance, instance_name, instance_filename, write_special=False):
     with open(instance_filename, "w") as f:
         f.write("NAME : " + instance_name + "\n")
         f.write("COMMENT : blank\n")
@@ -19,14 +19,17 @@ def write_instance(instance, instance_name, instance_filename, n_nodes):
         if "SERVICE_TIME" in instance:
             f.write("SERVICE_TIME : " + str(instance["SERVICE_TIME"]) + "\n" )
         f.write("EDGE_WEIGHT_SECTION\n")
-        for line in instance["WEIGHT"]:
-            f.write(" ".join(map(str, line)) + "\n")
+        # Our weight matrix is redundant for LKH.
+        for line in instance["WEIGHT"][:instance["SIZE"]]:
+            f.write(" ".join(map(str, np.where(np.isinf(line), 0, line)[:instance["SIZE"]])) + "\n")
         if "DEMAND" in instance:
             f.write("DEMAND_SECTION\n")
             for i, demand in enumerate(instance["DEMAND"]):
                 f.write(f"{i+1} {demand}\n")
         if "DEPOT" in instance:
             f.write("DEPOT_SECTION\n " + str(instance["DEPOT"]) + "\n -1\n")
+        if write_special and "SPECIAL" in instance:
+            f.write(f"SPECIAL_SECTION\n{len(instance["SPECIAL"])} {" ".join(map(str, instance["SPECIAL"]))}\n")
         if "TIME_WINDOW_SECTION" in instance:
             f.write("TIME_WINDOW_SECTION\n")
             for i, (tw_begin, tw_end) in enumerate(instance["TIME_WINDOW_SECTION"]):
@@ -46,12 +49,12 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
         f.write("SPECIAL\n")
         f.write("RUNS = 1\n")
         f.write("SEED = " + str(seed) + "\n")
-        if method == "FeatGenerate":
+        if method == "LabelGen":
             # f.write("GerenatingFeature\n")
-            if os.path.exists(feat_filename):
-                os.remove(feat_filename)
-            f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-            f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
+            # if os.path.exists(feat_filename):
+            #     os.remove(feat_filename)
+            # f.write("CANDIDATE_FILE = " + feat_filename + "\n")
+            # f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
             f.write(f"MAX_CANDIDATES = {max_candidates}\n")
         elif method == "Model":
             if os.path.exists(feat_filename):
@@ -60,11 +63,7 @@ def write_para(feat_filename, instance_filename, method, para_filename, candidat
             f.write("CANDIDATE_FILE = " + feat_filename + "\n")
         else:
             assert method == "LKH"
-            if feat_filename:
-                if os.path.exists(feat_filename):
-                    os.remove(feat_filename)
-                f.write("CANDIDATE_FILE = " + feat_filename + "\n")
-                f.write(f"MAX_CANDIDATES = {max_candidates}\n")
+            f.write(f"MAX_CANDIDATES = {max_candidates}\n")
             
 def read_feat(feat_filename, max_nodes, n_neighbours=20):
     edge_index = np.zeros([1, max_nodes, n_neighbours], dtype="int")
@@ -81,19 +80,18 @@ def read_feat(feat_filename, max_nodes, n_neighbours=20):
     feat_runtime = float(lines[-2].strip())
     return edge_index, n_nodes_extend, feat_runtime
 
-#TODO: generate alpha on ourselves.
-def read_solution_and_alpha(log_filename, feat_filename, max_trials):
+def read_solution(log_filename, feat_filename, max_trials):
     with open(log_filename, "r") as f:
         line = f.readlines()[-1]
         line = line.strip().split(" ")
         result = [int(_) for _ in line]
-    alpha_lists = []
-    with open(feat_filename, "r") as f:
-        n_nodes_extend = int(f.readline().strip())
-        for _ in range(n_nodes_extend):
-            parts = list(map(int.__call__, f.readline().strip().split()))
-            alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
-    return result, alpha_lists
+    # alpha_lists = []
+    # with open(feat_filename, "r") as f:
+    #     n_nodes_extend = int(f.readline().strip())
+    #     for _ in range(n_nodes_extend):
+    #         parts = list(map(int.__call__, f.readline().strip().split()))
+    #         alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
+    return result
 
 def read_performance(log_filename, _, max_trials):
     objs = []
@@ -104,7 +102,7 @@ def read_performance(log_filename, _, max_trials):
         for line in lines: # read the obj and runtime for each trial
             if line[:6] == "-Trial":
                 line = line.strip().split(" ")
-                assert len(objs) + 1 == int(line[-4])
+                assert len(objs) + 1 == int(line[-4]), log_filename
                 objs.append(int(line[-2]))
                 penalties.append(int(line[-3]))
                 runtimes.append(float(line[-1]))
@@ -114,7 +112,6 @@ def read_performance(log_filename, _, max_trials):
     
 
 def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):
-    n_node = candidate.shape[0]
     with open(feat_filename, "w") as f:
         f.write(str(n_nodes_extend) + "\n")
         for j in range(n_nodes_extend):
@@ -167,7 +164,7 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     """
     solve LKH.
     """
-    assert task == "LKH" or task == "Model"
+    assert task == "LabelGen" or task == "LKH" or task == "Model"
     N_NODES = instance["COORD"].__len__() # this will be refactored.
     para_filename = os.path.join(param_dir, instance_name + ".para")
     log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
@@ -175,7 +172,7 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     candidate_type = "alpha"
     candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
     if overwrite or not os.path.isfile(log_filename):
-        write_instance(instance, instance_name, instance_filename, N_NODES)
+        write_instance(instance, instance_name, instance_filename, task == "LabelGen")
         write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidates=max_candidates, candidate_set_type=candidate_type)
         if candidate is not None:
             write_candidate_dispather[instance["TYPE"]](feat_filename=candidate_filename, candidate=candidate, candidate2=candidate2, n_nodes_extend=n_nodes)

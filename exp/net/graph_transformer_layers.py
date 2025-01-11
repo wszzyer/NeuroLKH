@@ -149,7 +149,7 @@ class GraphEncoder(nn.Module):
         super().__init__()
         self.dropout_module = nn.Dropout(dropout)
         self.layerdrop = layerdrop
-        self.devices = devices
+        self.devices = devices or ['cpu']
         self.device_cap = (num_encoder_layers - 1) // len(devices) + 1 if devices else num_encoder_layers
         node_embedding_dim = node_embedding_dim
 
@@ -164,7 +164,7 @@ class GraphEncoder(nn.Module):
                     dropout=self.dropout_module.p,
                     attention_dropout=attention_dropout,
                     activation_dropout=activation_dropout,
-                    device=devices[index // self.device_cap]
+                    device=self.devices[index // self.device_cap]
                 )
                 for index in range(num_encoder_layers)
             ]
@@ -198,5 +198,7 @@ class GraphEncoder(nn.Module):
                 attn_mask=None, # We may use alpha-values to strengthen the attention, if only I have enough time
                 edge_index=edge_index,
             )
-            print(f"Layer {index}: {torch.cuda.memory_allocated(device) / 1e6:.1f}MiB")
+            # print(f"Layer {index}: {torch.cuda.memory_allocated(device) / 1e6:.1f}MiB")
+        x = x.to(self.devices[-1])
+        e = e.to(self.devices[-1])
         return x, e

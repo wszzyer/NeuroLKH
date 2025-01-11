@@ -367,6 +367,7 @@ static void Read_SALESMEN(void);
 static void Read_SCALE(void);
 static void Read_SERVICE_TIME(void);
 static void Read_SERVICE_TIME_SECTION(void);
+static void Read_SPECIAL_SECTION(void);
 static void Read_TIME_WINDOW_SECTION(void);
 static void Read_TOUR_SECTION(FILE ** File);
 static void Read_TYPE(void);
@@ -394,6 +395,7 @@ void ReadProblem()
     C = 0;
     c = 0;
     DistanceLimit = DBL_MAX;
+    UseExternalSpecial = 0;
     while ((Line = ReadLine(ProblemFile))) {
         if (!(Keyword = strtok(Line, Delimiters)))
             continue;
@@ -459,6 +461,8 @@ void ReadProblem()
             Read_SERVICE_TIME();
         else if (!strcmp(Keyword, "SERVICE_TIME_SECTION"))
             Read_SERVICE_TIME_SECTION();
+        else if (!strcmp(Keyword, "SPECIAL_SECTION"))
+            Read_SPECIAL_SECTION();
         else if (!strcmp(Keyword, "TIME_WINDOW_SECTION"))
             Read_TIME_WINDOW_SECTION();
         else if (!strcmp(Keyword, "TOUR_SECTION"))
@@ -2097,6 +2101,19 @@ static void Read_SERVICE_TIME_SECTION()
         if (!fscanf(ProblemFile, "%lf", &N->ServiceTime))
             eprintf("SERVICE_TIME_SECTION: "
                     "Missing service time for node %d", Id);
+    }
+}
+
+static void Read_SPECIAL_SECTION()
+{
+    UseExternalSpecial = 1;
+    int Count, Id, i;
+    if (ProblemType != CVRP)
+        eprintf("SPECIAL_SECTION: Only supported for CVRP problem.");
+    fscanint(ProblemFile, &Count);
+    for (i = 1; i <= Count; ++i) {
+        fscanint(ProblemFile, &Id);
+        NodeSet[Id].Special = i;
     }
 }
 

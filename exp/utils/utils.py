@@ -27,12 +27,12 @@ def smooth_matrix(adjs, mat: np.ndarray):
 
 def get_problem_default_node_feat_dim(problem: str) -> int:
     if problem == "tsp":
-        return 2 # x, y
+        return 3 # x, y, nodeid
     elif problem == "cvrp":
-        return 4 # x, y, demand, capacity
+        return 5 # x, y, nodeid, demand, capacity
     elif problem == "pdp":
-        return 5 # x, y, depot, pickup, delivery
+        return 6 # x, y, nodeid, depot, pickup, delivery
     elif problem == "cvrptw":
-        return 6 # x, y, demand, start_time, end_time, capacity
+        return 7 # x, y, nodeid, demand, start_time, end_time, capacity
     else:
         raise RuntimeError(f"Fail to recognize problem type {problem}")
