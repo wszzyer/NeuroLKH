@@ -12,7 +12,7 @@ import numpy as np
 
 from feats import get_all_feats, SSSPFeat
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
-from utils.lkh_utils import read_solution, solve_LKH
+from utils.instance_utils import read_solution, solve_LKH
 from utils.generate_utils import make_node_feat, make_edge_feat
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。

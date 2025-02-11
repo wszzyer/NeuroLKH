@@ -1,5 +1,5 @@
 from feats import get_all_feats, SSSPFeat
-from .lkh_utils import *
+from .instance_utils import *
 import tqdm
 from .alpha_utils import get_alpha
 

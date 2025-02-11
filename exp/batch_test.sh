@@ -35,7 +35,9 @@ done
 
 for instance in $(ls "$data_dir"/raw_instance/* |grep val)
 do
-    instance_problem=$(echo $instance | awk -F / "{print \$NF;}" | awk -F _ "{print \$1}")
+    full_name=$(echo $instance | awk -F / "{print \$NF;}")
+    full_name="${full_name%.*}"
+    instance_problem=$(awk -F _ "{print \$1}" <<< $full_name)
     if [[ $instance_problem != ${problem^^} ]]
     then
         continue
@@ -46,7 +48,7 @@ do
         echo "Please run LKH for $data_name first!"
         exit 1
     fi
-    if [[ ! -d "./saved/$exp_name" || -d "./result/$data_name/$exp_name.pkl" ]]
+    if [[ ! -d "./saved/$exp_name" || -f "./result/$data_name/$exp_name.pkl" ]]
     then
         continue
     fi
@@ -54,4 +56,5 @@ do
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
             --use_feats $use_feats --output_file ./result/$data_name/$exp_name".pkl" \
             --num_trials 30000 --num_candidates 10 || exit $?;
+    rm -rf ./evaluation/$full_name/
 done

@@ -13,11 +13,11 @@ do
     if [[ ! -d "./result/$data_name" ]]
     then
         mkdir "./result/$data_name"
-    else
-        continue
+    # else
+    #     continue
     fi
-    python ./lade_CVRP_lkh.py --problem ${problem^^} --data_path $instance \
-            --num_candidates 20 --work_dir ./evaluation/lkh \
-            --output_file ./result/$data_name/"lkh.pkl" \
-            --num_trials 30000;
+    python ./lade_CVRP_baseline.py --problem ${problem^^} --data_path $instance \
+            --num_candidates 20 --work_dir ./evaluation/   \
+            --output_file ./result/$data_name/"baseline.pkl" \
+            --num_trials 30000 || exit $?;
 done

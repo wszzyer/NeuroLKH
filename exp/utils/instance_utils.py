@@ -1,11 +1,10 @@
 import os
 import numpy as np
-from feats import SSSPFeat
 from utils.utils import map_wrapper
 from subprocess import check_call, DEVNULL
 
-def write_instance(instance, instance_name, instance_filename, write_special=False):
-    with open(instance_filename, "w") as f:
+def write_instance(instance, instance_name, instance_file, write_special=False):
+    with open(instance_file, "w") as f:
         f.write("NAME : " + instance_name + "\n")
         f.write("COMMENT : blank\n")
         f.write("TYPE : " + instance["TYPE"] + "\n")
@@ -20,8 +19,10 @@ def write_instance(instance, instance_name, instance_filename, write_special=Fal
             f.write("SERVICE_TIME : " + str(instance["SERVICE_TIME"]) + "\n" )
         f.write("EDGE_WEIGHT_SECTION\n")
         # Our weight matrix is redundant for LKH.
+        # I know that LKH and HGS can only make use of integers, but I keep this intentionally.
+        # But if we do not set the precision then the instance file would be very large...
         for line in instance["WEIGHT"][:instance["SIZE"]]:
-            f.write(" ".join(map(str, np.where(np.isinf(line), 0, line)[:instance["SIZE"]])) + "\n")
+            f.write(" ".join(map(lambda dec: f"{dec:.2f}", np.where(np.isinf(line), 0, line)[:instance["SIZE"]])) + "\n")
         if "DEMAND" in instance:
             f.write("DEMAND_SECTION\n")
             for i, demand in enumerate(instance["DEMAND"]):
@@ -36,73 +37,73 @@ def write_instance(instance, instance_name, instance_filename, write_special=Fal
                 f.write(f"{i+1} {tw_begin} {tw_end}\n")
         f.write("EOF\n")
 
-def write_para(feat_filename, instance_filename, method, para_filename, candidate_set_type="nn",
+def write_para(feat_file, instance_file, method, para_file, candidate_set_type="nn",
                 max_trials=1000, max_candidates=20, seed=1234):
     candidate_type_map = {
         "nn": "NEAREST-NEIGHBOR",
         "alpha": "ALPHA"
     }
-    with open(para_filename, "w") as f:
-        f.write("PROBLEM_FILE = " + instance_filename + "\n")
+    with open(para_file, "w") as f:
+        f.write(f"PROBLEM_FILE = {instance_file}\n")
         f.write("PRECISION = 1\n")
-        f.write("MAX_TRIALS = " + str(max_trials) + "\n")
+        f.write(f"MAX_TRIALS = {max_trials}\n")
         f.write("SPECIAL\n")
         f.write("RUNS = 1\n")
-        f.write("SEED = " + str(seed) + "\n")
+        f.write(f"SEED = {seed}\n")
         if method == "LabelGen":
             # f.write("GerenatingFeature\n")
-            # if os.path.exists(feat_filename):
-            #     os.remove(feat_filename)
-            # f.write("CANDIDATE_FILE = " + feat_filename + "\n")
+            # if os.path.exists(feat_file):
+            #     os.remove(feat_file)
+            # f.write(f"CANDIDATE_FILE = {feat_file}\n")
             # f.write(f"CANDIDATE_SET_TYPE = {candidate_type_map[candidate_set_type.lower()]}\n")
             f.write(f"MAX_CANDIDATES = {max_candidates}\n")
         elif method == "Model":
-            if os.path.exists(feat_filename):
-                os.remove(feat_filename)
+            if feat_file.exists():
+                feat_file.unlink()
             f.write("SUBGRADIENT = NO\n")
-            f.write("CANDIDATE_FILE = " + feat_filename + "\n")
+            f.write(f"CANDIDATE_FILE = {feat_file}\n")
         else:
             assert method == "LKH"
             f.write(f"MAX_CANDIDATES = {max_candidates}\n")
             
-def read_feat(feat_filename, max_nodes, n_neighbours=20):
+def read_feat(feat_file, max_nodes, n_neighbours=20):
     edge_index = np.zeros([1, max_nodes, n_neighbours], dtype="int")
-    with open(feat_filename, "r") as f:
+    with open(feat_file, "r") as f:
         lines = f.readlines()
         n_nodes_extend = int(lines[0].strip())
         for j in range(n_nodes_extend):
             line = lines[j + 1].strip().split(" ")
             line = [int(_) for _ in line]
-            assert len(line) == n_neighbours * 2 + 3, f"See {feat_filename}"
+            assert len(line) == n_neighbours * 2 + 3, f"See {feat_file}"
             assert line[0] == j + 1
             for _ in range(n_neighbours):
                 edge_index[0, j, _] = line[3 + _ * 2] - 1
     feat_runtime = float(lines[-2].strip())
     return edge_index, n_nodes_extend, feat_runtime
 
-def read_solution(log_filename, feat_filename, max_trials):
-    with open(log_filename, "r") as f:
+def read_solution(log_file, feat_file, max_trials):
+    with open(log_file, "r") as f:
         line = f.readlines()[-1]
         line = line.strip().split(" ")
         result = [int(_) for _ in line]
     # alpha_lists = []
-    # with open(feat_filename, "r") as f:
+    # with open(feat_file, "r") as f:
     #     n_nodes_extend = int(f.readline().strip())
     #     for _ in range(n_nodes_extend):
     #         parts = list(map(int.__call__, f.readline().strip().split()))
     #         alpha_lists.append(list(zip(parts[3::2], parts[4::2])))
     return result
 
-def read_performance(log_filename, _, max_trials):
+def read_performance(log_file, _, max_trials):
     objs = []
     penalties = []
     runtimes = []
-    with open(log_filename, "r") as f:
+    with open(log_file, "r") as f:
         lines = f.readlines()
         for line in lines: # read the obj and runtime for each trial
             if line[:6] == "-Trial":
                 line = line.strip().split(" ")
-                assert len(objs) + 1 == int(line[-4]), log_filename
+                assert len(objs) + 1 == int(line[-4]), str(log_file)
                 objs.append(int(line[-2]))
                 penalties.append(int(line[-3]))
                 runtimes.append(float(line[-1]))
@@ -111,8 +112,8 @@ def read_performance(log_filename, _, max_trials):
         return objs, penalties, runtimes
     
 
-def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):
-    with open(feat_filename, "w") as f:
+def write_candidate_CVRP(feat_file, candidate, n_nodes_extend, **unused):
+    with open(feat_file, "w") as f:
         f.write(str(n_nodes_extend) + "\n")
         for j in range(n_nodes_extend):
             line = str(j + 1) + " 0 5"
@@ -121,10 +122,10 @@ def write_candidate_CVRP(feat_filename, candidate, n_nodes_extend, **unused):
             f.write(line + "\n")
         f.write("-1\nEOF\n")
 
-def write_candidate_CVRPTW(feat_filename, candidate, candidate2, **unused):
+def write_candidate_CVRPTW(feat_file, candidate, candidate2, **unused):
     candidate1 = candidate
     n_node = candidate1.shape[0] - 1 # n_node without depot
-    with open(feat_filename, "w") as f:
+    with open(feat_file, "w") as f:
         f.write(str((n_node + 20) * 2) + "\n")
         line = "1 0 5 " + str(1 + n_node + 20) + " 0"
         for _ in range(4):
@@ -165,21 +166,20 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
     solve LKH.
     """
     assert task == "LabelGen" or task == "LKH" or task == "Model"
-    N_NODES = instance["COORD"].__len__() # this will be refactored.
-    para_filename = os.path.join(param_dir, instance_name + ".para")
-    log_filename = os.path.join(log_dir, instance_name + ".log") if log_dir else None
-    instance_filename = os.path.join(instance_dir, instance_name + ".cvrp")
+    para_file = param_dir / f"{instance_name}.para"
+    log_file = log_dir /  f"{instance_name}.log" if log_dir else None
+    instance_file = instance_dir / f"{instance_name}.cvrp"
     candidate_type = "alpha"
-    candidate_filename = os.path.join(candidate_dir, f"{instance_name}_{candidate_type}.txt") if candidate_dir else None
-    if overwrite or not os.path.isfile(log_filename):
-        write_instance(instance, instance_name, instance_filename, task == "LabelGen")
-        write_para(candidate_filename, instance_filename, task, para_filename, max_trials=max_trials, max_candidates=max_candidates, candidate_set_type=candidate_type)
+    candidate_file = candidate_dir / f"{instance_name}_{candidate_type}.txt" if candidate_dir else None
+    if overwrite or not log_file.isfile():
+        write_instance(instance, instance_name, instance_file, task == "LabelGen")
+        write_para(candidate_file, instance_file, task, para_file, max_trials=max_trials, max_candidates=max_candidates, candidate_set_type=candidate_type)
         if candidate is not None:
-            write_candidate_dispather[instance["TYPE"]](feat_filename=candidate_filename, candidate=candidate, candidate2=candidate2, n_nodes_extend=n_nodes)
-        f = open(log_filename, "w") if log_filename else DEVNULL
-        check_call(["./LKH", para_filename], stdout=f)
+            write_candidate_dispather[instance["TYPE"]](feat_file=candidate_file, candidate=candidate, candidate2=candidate2, n_nodes_extend=n_nodes)
+        f = open(log_file, "w") if log_file else DEVNULL
+        check_call(["./LKH", para_file], stdout=f)
 
-    return result_hook(log_filename, candidate_filename, max_trials)
+    return result_hook(log_file, candidate_file, max_trials)
 
 write_candidate_dispather = {
     "CVRP": write_candidate_CVRP,

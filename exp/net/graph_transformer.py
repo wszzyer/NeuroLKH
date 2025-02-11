@@ -34,7 +34,6 @@ class GraphTransformer(nn.Module):
             activation_dropout=activation_dropout,
             devices=devices
         )
-
         self.nodes_batchnorm = nn.BatchNorm1d(node_dim, affine=False)
         self.edges_batchnorm = nn.BatchNorm1d(edge_dim, affine=False)
         self.nodes_embedding = nn.Linear(node_dim, node_hidden_dim, bias=False)

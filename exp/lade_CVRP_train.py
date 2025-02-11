@@ -166,7 +166,7 @@ if __name__ == "__main__":
                 torch.save(net.state_dict(), args.save_dir + f"/best.pth")
             else:
                 worse_count += 1
-                if worse_count >  args.early_stop_thres:
+                if worse_count > args.early_stop_thres:
                     print("Early stop triggered, stop training.")
                     break
 

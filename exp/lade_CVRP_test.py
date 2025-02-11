@@ -31,7 +31,7 @@ def get_args():
     return parser.parse_args()
 
 from feats import parse_feat_strs
-from utils.lkh_utils import read_performance, solve_LKH
+from utils.instance_utils import read_performance, solve_LKH
 from utils.generate_utils import make_edge_feat, make_node_feat
 
 def make_candidates(net, test_loader, candidate_count=5, is_cvrptw=False):
@@ -74,12 +74,10 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
     LKH_param_dir = work_dir / "model_para"
     LKH_log_dir = work_dir / "model_log"
     candidate_dir = work_dir / "model_candidate"
-    temp_dir = work_dir / "tmp"
     instance_dir.mkdir(parents=True, exist_ok=True)
     LKH_param_dir.mkdir(exist_ok=True)
     LKH_log_dir.mkdir(exist_ok=True)
     candidate_dir.mkdir(exist_ok=True)
-    temp_dir.mkdir(exist_ok=True)
     
     feat_start_time = time.time()
     additional_feats = {}
@@ -119,7 +117,8 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
     model_runtime = time.time() - model_start_time
 
     results = list(tqdm(POOL.imap(solve_LKH, [("Model", read_performance, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), args.num_candidates,
-                                               True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]), total=len(dataset)))
+                                               True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]),
+                                                desc="Solving Problems", total=len(dataset)))
     results = np.array(results).transpose(1, 0, 2)
     return results, feat_runtime, model_runtime
 
