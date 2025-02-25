@@ -1,4 +1,3 @@
-# Note! LKH can be compiled with gcc-8, and can't be compiled with gcc-10 which will raise compile error.
 import multiprocess as mp
 import argparse
 import tqdm
@@ -19,12 +18,10 @@ allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
 N_EDGES = 20
 fetch_lade()
-np.random.seed(114514)
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool")
-    parser.add_argument("--n-nodes", type=int, default=100, help="num nodes")
     parser.add_argument("--n-edges", type=int, default=20, help="num edges")
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
     parser.add_argument("--train-ratio", type=float, default=0.833, help="train dataset time ratio")
@@ -33,6 +30,7 @@ def get_args():
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
     parser.add_argument("--sample-type", type=str, default="scatter", choices=["scatter",  "subroute"], help="scatter: sample directly from all tasks.")
     parser.add_argument("--output-dir", type=str, default="./data", help="data save folder")
+    parser.add_argument("--seed", type=int, default=42, help="seed for data sampling")
     return parser.parse_args()
 
 def gen_TSP_instance(graph_coords, additional_statistic, rdf, gen_count=8):
@@ -54,26 +52,33 @@ def gen_TSP_instance(graph_coords, additional_statistic, rdf, gen_count=8):
         instance["GRAPH_INDEX"] = problem_df.index.to_numpy()
     return result
 
-def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_frac=0.9, withTW = False):
-    if len(rdf) * gen_frac < 21: # 20 node + one depot. Ugly though.
+def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_frac=0.9, seed=42, withTW = False):
+    if gen_frac <= 1 and len(rdf) * gen_frac < 21: # 20 node + one depot. Ugly though.
+        return []
+    if gen_frac > len(rdf):
+        print(f"Warning: Sampling instance of size {gen_frac} from rdf of size {len(rdf)}. Skipped.")
         return []
     TYPE = "CVRP" if not withTW else "CVRPTW"
     estimated_routes_num = rdf.groupby(pd.Grouper(key="delivery_time", freq="D")).apply(lambda df: df.courier_id.nunique(), include_groups=False).sum()
     # raise RuntimeError(estimated_routes_num.sum())
     # node_count = rdf.graph_index.nunique()
     node_count = len(rdf)
+    DEMANDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
     MIN_CAPACITY = max(5, int(node_count * 0.05))
     MAX_CAPACITY = min(100, int(node_count * 0.2))
-    CAPACITY = min(max(node_count // estimated_routes_num + 5, MIN_CAPACITY), MAX_CAPACITY)
+    CAPACITY = min(max(node_count // estimated_routes_num + 5, MIN_CAPACITY), MAX_CAPACITY) * np.mean(DEMANDS)
     
+    random_state = np.random.RandomState(seed)
     result = []
     for _ in range(gen_count):
         instance = {
             "TYPE": TYPE,
             "CAPACITY": CAPACITY
         }
-        
-        sampled_df = rdf.sample(frac=gen_frac, replace=True)
+        if gen_frac > 1:
+            sampled_df = rdf.sample(n=gen_frac, replace=True, random_state=random_state)
+        else:
+            sampled_df = rdf.sample(frac=gen_frac, replace=True, random_state=random_state)
 
         graph_index = sampled_df.graph_index.to_numpy()
         instance["COORD"] = transform_crs(sampled_df[["lat", "lng"]].to_numpy(), SOURCE_CRS, TARGET_CRS)
@@ -83,8 +88,8 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_
         instance["WEIGHT"] = weight + diff[np.newaxis, :] + diff[:, np.newaxis]
         instance["SIZE"] = len(graph_index)
         instance["GRAPH_INDEX"] = graph_index
-        instance["DEPOT"] = np.random.choice(len(sampled_df)) + 1
-        instance["DEMAND"] = np.ones_like((graph_index), dtype=np.int32)
+        instance["DEPOT"] = 1
+        instance["DEMAND"] = random_state.choice(DEMANDS, graph_index.shape, replace=True)
         instance["DEMAND"][instance["DEPOT"] - 1] = 0
         min_depot_num = int(np.ceil(np.sum(instance["DEMAND"]) / instance["CAPACITY"]))
         instance["SPECIAL"] = np.argsort(instance["WEIGHT"][instance["DEPOT"] - 1])[1:min_depot_num+ 1] + 1
@@ -246,7 +251,7 @@ if __name__ == "__main__":
                 # velocity = (adjacent_length / (adjacent_time.astype(int)/1e9) )[valid_mask].mean()
                 # additional_statistic["velocity"] = velocity
 
-            def sample_instance(rdf, windows=["D", "3D"], full=False):
+            def sample_instance(rdf, windows=["D", "3D"], gen_kwargs={}):
                 rdf = rdf.reset_index(drop=True)
                 sub_routes = []
                 for courier_id, courier_rdf in rdf.groupby("courier_id"):
@@ -261,8 +266,6 @@ if __name__ == "__main__":
                 for window in windows:
                     grouper = pd.Grouper(key="delivery_time", freq=window)
                     instance_list += [df for (_, df) in rdf.groupby(grouper)]
-                if full:
-                    instance_list.append(rdf) 
                 
                 # generate spcific part of instances 
                 generate_function = {
@@ -271,8 +274,8 @@ if __name__ == "__main__":
                     "CVRPTW": functools.partial(gen_CVRP_instance, withTW = True),
                     "PDP": None
                 }[args.problem]
-                return list(chain(*tqdm.tqdm(pool.imap(functools.partial(generate_function, graph_coords, additional_statistic), instance_list,
-                                                 chunksize=32), desc='Generating Instance', total=len(instance_list))))
+                return list(chain(*tqdm.tqdm(pool.imap(functools.partial(generate_function, graph_coords, additional_statistic, seed=args.seed, **gen_kwargs),
+                                                        instance_list, chunksize=32), desc='Generating Instance', total=len(instance_list))))
                 
             train_instance = sample_instance(train_rdf)
             val_instance = sample_instance(val_rdf)
@@ -287,6 +290,13 @@ if __name__ == "__main__":
                 pickle.dump(val_instance, f)
             with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
                 pickle.dump((rdf, graph, gdf_nodes), f)
+            # save fixed size problems to another dir
+            fixed_dir = output_dir / "raw_fixed_size"
+            raw_dir.mkdir(exist_ok=True)
+            for size in (100, 200, 500, 1000):
+                instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
+                with open(raw_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
+                    pickle.dump(instance, f)
             # generate additional features
             additional_feats = {}
             for feat in FEATS:

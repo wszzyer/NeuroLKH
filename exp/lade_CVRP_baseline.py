@@ -36,12 +36,13 @@ def sure_path(path: Path):
 def eval_lkh(dataset_path, work_dir, max_candidates, max_trials, pool=None, ignore_cache=True):
     LKH_param_dir = work_dir / "param"
     LKH_log_dir = work_dir / "log"
+    instance_dir = work_dir / "instance"
     LKH_param_dir.mkdir(exist_ok=True)
     LKH_log_dir.mkdir(exist_ok=True)
-    instance_dir = work_dir / "instance"
+    instance_dir.mkdir(exist_ok=True)
 
     if pool:
-        pmap = partial(process_map, chunksize=4, max_workers=pool)
+        pmap = partial(process_map, chunksize=4)
     else:
         pmap = map
 
