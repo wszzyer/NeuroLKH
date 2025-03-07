@@ -18,6 +18,7 @@ do
     fi
     python ./lade_CVRP_baseline.py --problem ${problem^^} --data_path $instance \
             --num_candidates 20 --work_dir ./evaluation/   \
+            --baselines lkh hgs \
             --output_file ./result/$data_name/"baseline.pkl" \
             --num_trials 30000 || exit $?;
 done
