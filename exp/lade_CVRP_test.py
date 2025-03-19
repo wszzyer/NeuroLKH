@@ -2,7 +2,7 @@ import multiprocess as mp
 import tqdm
 import numpy as np
 import pickle
-from net import GraphTransformer, SparseGCNModel
+from net import GraphTransformer
 import torch
 from tqdm import tqdm
 import argparse
@@ -15,8 +15,7 @@ from feats import get_all_feats, SSSPFeat
 def get_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
-    parser.add_argument("--exp_name", type=str, help="experiment name")
-    parser.add_argument('--data_path', type=str, default='data/generated/CVRP_val_scatter_yt_111_100.pkl', help='')
+    parser.add_argument('--data_dir', type=str, default='data/generated/', help='')
     parser.add_argument('--geo_path', type=str, default='data/generated/CVRP_geo_scatter_yt_111_100.pkl', help='')
     parser.add_argument('--model_path', type=str, default='saved/exp1/best.pth', help='')
     parser.add_argument('--batch_size', type=int, default=32, help='')
@@ -31,7 +30,7 @@ def get_args():
     return parser.parse_args()
 
 from feats import parse_feat_strs
-from utils.instance_utils import read_performance, solve_LKH
+from utils.instance_utils import read_performance, solve_LKH, solve_kopt
 from utils.generate_utils import make_edge_feat, make_node_feat
 
 def make_candidates(net, test_loader, candidate_count=5, is_cvrptw=False):
@@ -71,12 +70,12 @@ def make_candidates(net, test_loader, candidate_count=5, is_cvrptw=False):
 
 def eval_model(dataset, geo, args, work_dir, max_trials):
     instance_dir = work_dir / "instance"
-    LKH_param_dir = work_dir / "model_para"
-    LKH_log_dir = work_dir / "model_log"
-    candidate_dir = work_dir / "model_candidate"
+    param_dir = work_dir / "param"
+    output_dir = work_dir / "output"
+    candidate_dir = work_dir / "candidates"
     instance_dir.mkdir(parents=True, exist_ok=True)
-    LKH_param_dir.mkdir(exist_ok=True)
-    LKH_log_dir.mkdir(exist_ok=True)
+    param_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(exist_ok=True)
     candidate_dir.mkdir(exist_ok=True)
     
     feat_start_time = time.time()
@@ -116,11 +115,16 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
             candidate, candidate2 = make_candidates(net, test_loader, candidate_count=args.num_candidates, is_cvrptw=True)
     model_runtime = time.time() - model_start_time
 
-    results = list(tqdm(POOL.imap(solve_LKH, [("Model", read_performance, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), args.num_candidates,
-                                               True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]),
-                                                desc="Solving Problems", total=len(dataset)))
-    results = np.array(results).transpose(1, 0, 2)
+    # results = list(tqdm(POOL.imap(solve_LKH, [("Model", read_performance, instance_dir, param_dir, output_dir, dataset[i], str(i), args.num_candidates,
+    #                                            True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]),
+    #                                             desc="Solving Problems", total=len(dataset)))
+    results = list(tqdm((solve_kopt(dataset[i], str(i), node_num[i], candidate[i], param_dir, instance_dir, candidate_dir, output_dir, max_trials) for i in range(len(dataset))),
+                        desc='Solving with k-opt', total=len(dataset)))
+    results = np.stack(results).transpose(1, 0, 2)
     return results, feat_runtime, model_runtime
+
+def path_to_name(path: Path):
+    return '_'.join(str(path.stem).split('_')[1:][:-4])
 
 if __name__ == "__main__":
     # global variables
@@ -135,17 +139,28 @@ if __name__ == "__main__":
     POOL = mp.Pool(args.num_cpus)
     FEATS = get_all_feats()
 
-    dataset_path = Path(args.data_path).resolve()
-    with dataset_path.open("rb") as f:
-        dataset = pickle.load(f)
+    dataset_dir = Path(args.data_dir).resolve()
     geo_path = Path(args.geo_path).resolve()
     with geo_path.open("rb") as f:
         geo = pickle.load(f)
-    exp_name = args.exp_name or dataset_path.stem
-    work_dir = Path(args.work_dir).resolve() / exp_name
-    
-    eval_result = eval_model(dataset, geo, args, work_dir, args.num_trials)
+    work_dir = Path(args.work_dir).resolve() 
 
-    file = open(args.output_file, mode='wb') # Throw error upon illegal output parameter
-    pickle.dump(eval_result, file)
+    eval_result = {}
+    output_path = Path(args.output_file).resolve()
+    if output_path.exists():
+        with open(output_path, "rb") as f:
+            eval_result = pickle.load(f)
+    
+    for dataset_path in dataset_dir.iterdir():
+        exp_name = path_to_name(dataset_path)
+        print(exp_name)
+        if 'train' in exp_name or exp_name in eval_result:
+            continue
+        with dataset_path.open("rb") as f:
+            dataset = pickle.load(f)
+        if dataset is None:
+            raise RuntimeError(f"Fail to load dataset from {dataset_path}.")
+        eval_result[exp_name] = eval_model(dataset, geo, args, work_dir / exp_name, args.num_trials)
+        with open(output_path, "wb") as f:
+            pickle.dump(eval_result, f)
     POOL.close()

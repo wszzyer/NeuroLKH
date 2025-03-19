@@ -42,4 +42,4 @@ def solve_HGS(instance_file, max_iter=5000, max_runtime=7200):
         pad_length = max_iter - len(runtime)
         runtime = np.pad(runtime, (0, pad_length), "constant", constant_values=runtime[-1])
         performance = performance + [performance[-1] for _ in range(pad_length)]
-    return runtime, performance
+    return performance, runtime

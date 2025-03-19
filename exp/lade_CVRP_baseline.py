@@ -12,10 +12,10 @@ from utils.baseline_utils import solve_HGS, write_HGS_instance
 def get_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
-    parser.add_argument('--data_path', type=str, default='data/generated/CVRP_val_scatter_yt_111_100.pkl', help='')
+    parser.add_argument('--data_dir', type=str, default='data/generated/', help='')
     parser.add_argument('--baselines', type=str, action='extend', default=['hgs'], nargs='+', help='')
     parser.add_argument('--num_candidates', type=int, default=20, help='')
-    parser.add_argument("--num_cpus", type=int, default=32, help="num cpus POOL")
+    parser.add_argument("--num_cpus", type=int, default=20, help="num cpus POOL")
     parser.add_argument('--work_dir', type=str, default="./evaluation", help='')
     parser.add_argument('--output_file', type=str, default='a.out', help='')
     parser.add_argument('--num_trials', type=int, default=30000, help='')
@@ -69,10 +69,13 @@ def eval_hgs(dataset_path, work_dir, pool=None):
     results = np.array(results).transpose(1, 0, 2)
     return results
 
+def path_to_name(path: Path):
+    return '_'.join(str(path.stem).split('_')[1:][:-4])
+
 if __name__ == "__main__":
     args = get_args()
     pool = Pool(args.num_cpus)
-    dataset_path = Path(args.data_path).resolve()
+    dataset_dir = Path(args.data_dir).resolve()
     work_dir = Path(args.work_dir).resolve()
     output_file = Path(args.output_file).resolve()
     if output_file.exists():
@@ -83,11 +86,21 @@ if __name__ == "__main__":
         existing_keys = []
         result = {}
 
-    print(f'Evaluating {dataset_path.stem}')
+    print(f'Evaluating {dataset_dir.stem}')
     if 'lkh' in args.baselines and 'LKH' not in existing_keys:
-        result['LKH'] = eval_lkh(dataset_path, sure_path(work_dir / "lkh"), args.num_candidates, args.num_trials, pool=pool, ignore_cache=True)
+        result['LKH'] = {}
+        for dataset in dataset_dir.iterdir():
+            if 'train' in dataset.stem:
+                continue
+            result['LKH'][path_to_name(dataset)] = eval_lkh(dataset, sure_path(work_dir / "lkh"), args.num_candidates, args.num_trials, pool=pool, ignore_cache=True)
+        with output_file.open(mode='wb') as file:
+            pickle.dump(result, file)
     if 'hgs' in args.baselines and 'HGS' not in existing_keys:
-        result['HGS'] = eval_hgs(dataset_path, sure_path(work_dir / "hgs"), pool=args.num_cpus)
-    with output_file.open(mode='wb') as file:
-        pickle.dump(result, file)
+        result['HGS'] = {}
+        for dataset in dataset_dir.iterdir():
+            if 'train' in dataset.stem:
+                continue
+            result['HGS'][path_to_name(dataset)] = eval_hgs(dataset, sure_path(work_dir / "hgs"), pool=args.num_cpus)
+        with output_file.open(mode='wb') as file:
+            pickle.dump(result, file)
     pool.close()

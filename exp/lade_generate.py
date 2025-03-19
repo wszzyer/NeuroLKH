@@ -66,7 +66,7 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_
     DEMANDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
     MIN_CAPACITY = max(5, int(node_count * 0.05))
     MAX_CAPACITY = min(100, int(node_count * 0.2))
-    CAPACITY = min(max(node_count // estimated_routes_num + 5, MIN_CAPACITY), MAX_CAPACITY) * np.mean(DEMANDS)
+    CAPACITY = int(np.ceil(min(max(node_count // estimated_routes_num + 5, MIN_CAPACITY), MAX_CAPACITY) * np.mean(DEMANDS)))
     
     random_state = np.random.RandomState(seed)
     result = []
@@ -84,9 +84,10 @@ def gen_CVRP_instance(graph_coords, additional_statistic, rdf, gen_count=8, gen_
         instance["COORD"] = transform_crs(sampled_df[["lat", "lng"]].to_numpy(), SOURCE_CRS, TARGET_CRS)
         # Use merged weights to avoid zeros. Even though they act like nothing but zeros.
         weight = additional_statistic["dist"][graph_index]
+        instance["SIZE"] = len(graph_index)
         diff = np.abs(instance["COORD"] - graph_coords[graph_index]).sum(axis=-1)
         instance["WEIGHT"] = weight + diff[np.newaxis, :] + diff[:, np.newaxis]
-        instance["SIZE"] = len(graph_index)
+        instance["WEIGHT"][np.arange(instance["SIZE"]), np.arange(instance["SIZE"])] = 0
         instance["GRAPH_INDEX"] = graph_index
         instance["DEPOT"] = 1
         instance["DEMAND"] = random_state.choice(DEMANDS, graph_index.shape, replace=True)
@@ -284,19 +285,20 @@ if __name__ == "__main__":
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
             raw_dir = output_dir / "raw_instance"
             raw_dir.mkdir(exist_ok=True)
-            with open(raw_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
+            raw_city_dir = raw_dir / f"{city}_{region_id}_{N_EDGES}"
+            raw_city_dir.mkdir(exist_ok=True)
+            with open(raw_city_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
                 pickle.dump(train_instance, f)
-            with open(raw_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
+            with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
                 pickle.dump(val_instance, f)
             with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
                 pickle.dump((rdf, graph, gdf_nodes), f)
             # save fixed size problems to another dir
-            fixed_dir = output_dir / "raw_fixed_size"
-            raw_dir.mkdir(exist_ok=True)
             for size in (100, 200, 500, 1000):
                 instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
-                with open(raw_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
-                    pickle.dump(instance, f)
+                if instance:
+                    with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
+                        pickle.dump(instance, f)
             # generate additional features
             additional_feats = {}
             for feat in FEATS:

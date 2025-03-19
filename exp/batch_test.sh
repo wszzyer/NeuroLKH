@@ -16,6 +16,7 @@ shift;
 
 device="cuda:0"
 data_dir="./data"
+result_dir="./result"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --device)
@@ -26,6 +27,10 @@ while [[ $# -gt 0 ]]; do
       data_dir="$2"
       shift 2
       ;;
+    --result_dir)
+      result_dir="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown option $1"
       exit 1
@@ -33,28 +38,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for instance in $(ls "$data_dir"/raw_instance/* |grep val)
+for data_name in $(ls "$data_dir"/raw_instance/ |grep geo -v)
 do
-    full_name=$(echo $instance | awk -F / "{print \$NF;}")
-    full_name="${full_name%.*}"
-    instance_problem=$(awk -F _ "{print \$1}" <<< $full_name)
-    if [[ $instance_problem != ${problem^^} ]]
-    then
-        continue
-    fi
-    data_name=$(awk -F _ '{print $6"_"$7"_"$8}' <<< $instance | awk -F . '{print $1}')
-    if [[ ! -d "./result/$data_name" ]]
+    if [[ ! -d "$result_dir/$data_name" ]]
     then
         echo "Please run LKH for $data_name first!"
         exit 1
     fi
-    if [[ ! -d "./saved/$exp_name" || -f "./result/$data_name/$exp_name.pkl" ]]
+    if [[ ! -d "./saved/$exp_name" ]]
     then
         continue
     fi
-    python ./lade_CVRP_test.py --problem ${problem^^} --data_path $instance --geo_path ${instance/val/geo} \
+    python ./lade_CVRP_test.py --problem CVRP --data_dir $data_dir/raw_instance/$data_name --geo_path $data_dir/raw_instance/CVRP_geo_raw_scatter_$data_name.pkl \
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
-            --use_feats $use_feats --output_file ./result/$data_name/$exp_name".pkl" \
-            --num_trials 30000 --num_candidates 10 || exit $?;
-    rm -rf ./evaluation/$full_name/
+            --use_feats $use_feats --output_file $result_dir/$data_name/$exp_name".pkl" \
+            --num_trials 300000 --num_candidates 10 || exit $?;
+    rm -rf ./evaluation/$data_name/
 done

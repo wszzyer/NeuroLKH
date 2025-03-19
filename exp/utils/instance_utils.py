@@ -3,7 +3,9 @@ import numpy as np
 from utils.utils import map_wrapper
 from subprocess import check_call, DEVNULL
 
-def write_instance(instance, instance_name, instance_file, write_special=False):
+def write_instance(instance, instance_name, instance_file, write_special=False, zero_start=False):
+    shift = 0 if zero_start else 1
+    
     with open(instance_file, "w") as f:
         f.write("NAME : " + instance_name + "\n")
         f.write("COMMENT : blank\n")
@@ -26,15 +28,15 @@ def write_instance(instance, instance_name, instance_file, write_special=False):
         if "DEMAND" in instance:
             f.write("DEMAND_SECTION\n")
             for i, demand in enumerate(instance["DEMAND"]):
-                f.write(f"{i+1} {demand}\n")
+                f.write(f"{i + shift} {demand}\n")
         if "DEPOT" in instance:
-            f.write("DEPOT_SECTION\n " + str(instance["DEPOT"]) + "\n -1\n")
+            f.write("DEPOT_SECTION\n " + str(instance["DEPOT"] + shift - 1) + "\n -1\n")
         if write_special and "SPECIAL" in instance:
-            f.write(f"SPECIAL_SECTION\n{len(instance["SPECIAL"])} {" ".join(map(str, instance["SPECIAL"]))}\n")
+            f.write(f"SPECIAL_SECTION\n{len(instance["SPECIAL"])} {" ".join(map(str, instance["SPECIAL"] + shift - 1))}\n")
         if "TIME_WINDOW_SECTION" in instance:
             f.write("TIME_WINDOW_SECTION\n")
             for i, (tw_begin, tw_end) in enumerate(instance["TIME_WINDOW_SECTION"]):
-                f.write(f"{i+1} {tw_begin} {tw_end}\n")
+                f.write(f"{i + shift} {tw_begin} {tw_end}\n")
         f.write("EOF\n")
 
 def write_para(feat_file, instance_file, method, para_file, candidate_set_type="nn",
@@ -62,6 +64,8 @@ def write_para(feat_file, instance_file, method, para_file, candidate_set_type="
                 feat_file.unlink()
             f.write("SUBGRADIENT = NO\n")
             f.write(f"CANDIDATE_FILE = {feat_file}\n")
+        elif method == "Kopt":
+            pass
         else:
             assert method == "LKH"
             f.write(f"MAX_CANDIDATES = {max_candidates}\n")
@@ -103,9 +107,13 @@ def read_performance(log_file, _, max_trials):
         for line in lines: # read the obj and runtime for each trial
             if line[:6] == "-Trial":
                 line = line.strip().split(" ")
-                assert len(objs) + 1 == int(line[-4]), str(log_file)
+                if len(line) == 4: # The problem may degenerate to TSP if capacity is too large
+                    assert len(objs) + 1 == int(line[-3]), str(log_file)
+                    penalties.append(0)
+                else:
+                    assert len(objs) + 1 == int(line[-4]), str(log_file)
+                    penalties.append(int(line[-3]))
                 objs.append(int(line[-2]))
-                penalties.append(int(line[-3]))
                 runtimes.append(float(line[-1]))
         final_obj = int(lines[-11].split(",")[0].split(" ")[-1])
         assert objs[-1] == final_obj
@@ -185,3 +193,22 @@ write_candidate_dispather = {
     "CVRP": write_candidate_CVRP,
     "CVRPTW": write_candidate_CVRPTW
 }
+
+def solve_kopt(instance, instance_name, node_num, candidates, param_dir, instance_dir, candidate_dir, output_dir, max_trials=1000000):
+    para_file = param_dir / f"{instance_name}.para"
+    instance_file = instance_dir / f"{instance_name}.cvrp"
+    candidate_file = candidate_dir / f"{instance_name}.candidates"
+    output_file = output_dir /  f"{instance_name}.pth"
+
+    write_instance(instance, instance_name, instance_file, write_special=True, zero_start=True)
+    with candidate_file.open('w') as f:
+        f.write(f"{node_num}\n")
+        for node_candidates in candidates[:node_num]:
+            f.write(' '.join(map(str, node_candidates)))
+            f.write('\n')
+    with para_file.open('w') as f:
+        f.write(f"problem_path = \"{instance_file}\"\n")
+        f.write(f"candidate_path = \"{candidate_file}\"\n")
+        f.write(f"trial_limit = {max_trials}\n")
+    check_call(["./zyclk", para_file, output_file])
+    return np.load(output_file)
