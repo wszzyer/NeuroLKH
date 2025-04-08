@@ -101,7 +101,7 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
                         edge_dim=sum(map(lambda cls:cls.size, edge_feats_cls)),
                         node_hidden_dim=128,
                         n_encoder_layers=6)
-    # net.to(args.device)
+    # net.to(args.device) 
     # net.load_state_dict(torch.load(args.model_path, weights_only=True))
     net.load_state_dict(torch.load(args.model_path, weights_only=True), assign=True)
     model_start_time = time.time()
@@ -118,7 +118,7 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
     # results = list(tqdm(POOL.imap(solve_LKH, [("Model", read_performance, instance_dir, param_dir, output_dir, dataset[i], str(i), args.num_candidates,
     #                                            True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]),
     #                                             desc="Solving Problems", total=len(dataset)))
-    results = list(tqdm((solve_kopt(dataset[i], str(i), node_num[i], candidate[i], param_dir, instance_dir, candidate_dir, output_dir, max_trials) for i in range(len(dataset))),
+    results = list(tqdm((solve_kopt(dataset[i], str(i), node_num[i], param_dir, instance_dir, output_dir, candidate[i], candidate_dir, False, max_trials) for i in range(len(dataset))),
                         desc='Solving with k-opt', total=len(dataset)))
     results = np.stack(results).transpose(1, 0, 2)
     return results, feat_runtime, model_runtime
@@ -144,6 +144,7 @@ if __name__ == "__main__":
     with geo_path.open("rb") as f:
         geo = pickle.load(f)
     work_dir = Path(args.work_dir).resolve() 
+    model_name = Path(args.model_path).resolve().parent.parent.stem
 
     eval_result = {}
     output_path = Path(args.output_file).resolve()
@@ -160,7 +161,7 @@ if __name__ == "__main__":
             dataset = pickle.load(f)
         if dataset is None:
             raise RuntimeError(f"Fail to load dataset from {dataset_path}.")
-        eval_result[exp_name] = eval_model(dataset, geo, args, work_dir / exp_name, args.num_trials)
+        eval_result[exp_name] = eval_model(dataset, geo, args, work_dir / model_name, args.num_trials)
         with open(output_path, "wb") as f:
             pickle.dump(eval_result, f)
     POOL.close()

@@ -2,6 +2,8 @@ from .od_feat import ODFeat
 from .weight_feat import SSSPFeat
 from .space_syntax import SpaceSyntaxFeat
 from .node_heat_feat import NodeHeatFeat
+import logging
+logger = logging.getLogger(__name__)
 
 def get_all_feats():
     return (SSSPFeat, ODFeat, NodeHeatFeat, SpaceSyntaxFeat)
@@ -27,5 +29,5 @@ def parse_feat_strs(feat_strs, print_result=False):
                 elif feat_cls.feat_type == 'edge' and feat_cls not in edge_feats:
                     edge_feats.append(feat_cls)
     if print_result:
-        print(f"Using Node feats: {[feat.__name__ for feat in node_feats]}, Edge Feats: {[feat.__name__ for feat in edge_feats]}")
+        logger.info(f"Using Node feats: {[feat.__name__ for feat in node_feats]}, Edge Feats: {[feat.__name__ for feat in edge_feats]}")
     return node_feats, edge_feats

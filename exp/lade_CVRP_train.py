@@ -9,7 +9,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from feats import parse_feat_strs
 from utils.dataset import LaDeDataset
+import logging
 
+logger = logging.getLogger(__name__)
 def get_args():  
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--problem', default='CVRP', choices=['CVRP', 'CVRPTW'], help='')
@@ -46,6 +48,7 @@ def calculate_loss(problem, y_pred_nodes, y_pred_edges, edge_label, edge_cw, los
     return edge_loss, reg_loss
 
 if __name__ == "__main__":
+    logging.basicConfig(format='[%(asctime)s][%(levelname)s]%(message)s', datefmt='%I:%M:%S', level=logging.INFO)
     args = get_args()
     args.problem = args.problem.lower()
     if not args.device:
@@ -70,8 +73,9 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem)
-    val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem)
+    train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem, label_type='ours')
+    val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem, label_type='ours')
+    logger.info(f"Using {args.file_path} as training dataset, {args.eval_file_path} as validation set")
 
     start_epoch  = 0
     best_loss = 1e7
@@ -119,7 +123,7 @@ if __name__ == "__main__":
             optimizer.step()
             optimizer.zero_grad()
             pbar.set_postfix({"train_loss": loss.item()})
-        print (f"Epoch {epoch} loss {np.sum(statistics['train_loss'])/statistics['train_sample_count']:.6f}",
+        logger.info(f"Epoch {epoch} loss {np.sum(statistics['train_loss'])/statistics['train_sample_count']:.6f} " + 
                f"edge_loss {np.sum(statistics['edge_loss'])/statistics['train_sample_count']:.6f}")    
         scheduler.step()
 
@@ -158,7 +162,7 @@ if __name__ == "__main__":
                     statistics["edge_loss"].append(edge_loss.mean().detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
             avg_loss = np.sum(statistics["val_loss"])/statistics['val_sample_count']
-            print (f"{args.eval_file_path} loss {avg_loss:.7f} edge_loss {np.sum(statistics["val_loss"])/statistics['val_sample_count']:.7f}" + 
+            logger.info(f"{args.eval_file_path} loss {avg_loss:.7f} edge_loss {np.sum(statistics["val_loss"])/statistics['val_sample_count']:.7f}" + 
                    (f" Avg rank: {np.mean(dataset_rank):3f}" if dataset_rank else ""))
             if avg_loss < best_loss:
                 best_loss = avg_loss
@@ -167,7 +171,7 @@ if __name__ == "__main__":
             else:
                 worse_count += 1
                 if worse_count > args.early_stop_thres:
-                    print("Early stop triggered, stop training.")
+                    logger.info("Early stop triggered, stop training.")
                     break
 
         if (epoch + 1) % args.save_interval == 0:

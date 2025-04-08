@@ -4,10 +4,11 @@ import numpy as np
 from feats import get_feat_indexes
 from utils import get_problem_default_node_feat_dim
 from torch.utils.data import Dataset
-
+import logging
+logger = logging.getLogger(__name__)
 
 class LaDeDataset(Dataset):
-    def __init__(self, file_path, extra_node_feats, edge_feats, problem="tsp"):
+    def __init__(self, file_path, extra_node_feats, edge_feats, problem="tsp", label_type="lkh"):
         self.file_path = file_path
         self.problem = problem
         with open(self.file_path, "rb") as f:
@@ -33,7 +34,14 @@ class LaDeDataset(Dataset):
                     np.zeros((self.max_node_num - n, ), dtype=np.bool_),
             )) for n in self.dataset["node_num"]])
 
-        self.key_list = ["node_feat", "edge_feat", "label", "edge_index", "pad_mask"]
+        if label_type == "lkh":
+            label_name = "label"
+        elif label_type == "ours":
+            label_name = "new_label"
+        else:
+            raise RuntimeError(f"{label_type} is an invalid label type")
+        self.key_list = ["node_feat", "edge_feat", label_name, "edge_index", "pad_mask"]
+        logger.info(f"Load dataset from {self.file_path}, max size {self.dataset["node_feat"].shape[1]}")
 
     def __iter__(self):
         return iter(zip([self.dataset[key] for key in self.key_list]))

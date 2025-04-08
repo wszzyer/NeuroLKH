@@ -42,7 +42,7 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
             # See "An Improved Transformation of the Symmetric Multiple Traveling Salesman Problem" for details.
             # See MTSP2TSP.c:76 (especially Forbidden.c:31) for LKH implementation.
             depot = instance["DEPOT"] - 1
-            dist_mat = instance["WEIGHT"]
+            dist_mat = instance["WEIGHT"].copy() # As a lib function, we shouldnt touch input paras.
             # Set diagonal line to inf. If not, we have to set every pair of depots manually.
             dist_mat[np.arange(instance["SIZE"]), np.arange(instance["SIZE"])] = np.inf
             all_depot_count = extended_size - instance["SIZE"] + 1
@@ -106,3 +106,22 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
             chunk_feat_list.append(feat[sample_index[:current_chunksize], node_index, edge_index[slice_index]])
         edge_feat_list.append(np.concatenate(chunk_feat_list, axis=0))
     return np.stack(edge_feat_list, -1), edge_index
+
+def tour_to_label(tours, label_size, edge_index, split_label=False):
+    tour_count = len(tours)
+    label = np.zeros([tour_count, label_size, label_size], dtype="bool")
+    if split_label:
+        label2 = np.zeros([tour_count, label_size, label_size], dtype="bool")
+    for i, tour in enumerate(tours):
+        result = np.array(tour) - 1
+        label[i][result, np.roll(result, 1, -1)] = True
+        if not split_label:
+            label[i][np.roll(result, 1, -1), result] = True
+        else:
+            label2[i][np.roll(result, 1, -1), result] = True
+    label = label[np.arange(tour_count).reshape(-1, 1, 1), np.arange(label_size).reshape(1, -1, 1), edge_index]    
+    if split_label:
+        label2 = label2[np.arange(tour_count).reshape(-1, 1, 1), np.arange(label_size).reshape(1, -1, 1), edge_index]
+        return np.stack((label, label2)).transpose(1, 0, 2, 3)
+    else:
+        return label

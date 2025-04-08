@@ -11,8 +11,8 @@ import numpy as np
 
 from feats import get_all_feats, SSSPFeat
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
-from utils.instance_utils import read_solution, solve_LKH
-from utils.generate_utils import make_node_feat, make_edge_feat
+from utils.instance_utils import read_solution, solve_LKH, solve_kopt
+from utils.generate_utils import make_node_feat, make_edge_feat, tour_to_label
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
@@ -143,34 +143,19 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
     # The sizes of the problems varies greatly. A large chunksize will cause great inbalance between threads.
     results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LabelGen", read_solution, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
                                         True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
-    if not allow_extend_nodes:
-        results = np.array(results)
-        raise RuntimeError(result.shape, node_num.shape)
-        results[results > node_num] = 0
-
+    # NOTE: TSP result need extra postprocessing.
+    _, new_results =  list(zip(*tqdm.tqdm((solve_kopt(instance, f"CASE_{i}", N_EDGES, LKH_param_dir, instance_dir, LKH_log_dir, max_trials=300000, collect_tour=True) for i, instance in enumerate(dataset)), total=len(dataset))))
+    new_results
     # construct edge label.
-    label = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
-    label2 = np.zeros([n_samples, max_nodes, max_nodes], dtype="bool")
-    for i in range(n_samples):
-        result = np.array(results[i]) - 1
-        label[i][result, np.roll(result, 1, -1)] = True
-        if not split_edge_label:
-            label[i][np.roll(result, 1, -1), result] = True
-        else:
-            label2[i][np.roll(result, 1, -1), result] = True
-    label = label[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]    
-    label2 = label2[np.arange(n_samples).reshape(-1, 1, 1), np.arange(max_nodes).reshape(1, -1, 1), edge_index]
     
     feat = {
         "node_feat": node_feat,
         "edge_feat": edge_feat,
         "edge_index": edge_index,
-        "node_num": node_num
+        "node_num": node_num,
+        "label": tour_to_label(results, max_nodes, edge_index),
+        "new_label": tour_to_label(new_results, max_nodes, edge_index)
     }
-    if not split_edge_label:
-        feat["label"] = label
-    else:
-        feat["label"] = np.stack((label, label2)).transpose(1, 0, 2, 3)
 
     with (generated_dir / f"{dataset_name}.pkl").open("wb") as f:
         pickle.dump(feat, f)
@@ -278,8 +263,8 @@ if __name__ == "__main__":
                 return list(chain(*tqdm.tqdm(pool.imap(functools.partial(generate_function, graph_coords, additional_statistic, seed=args.seed, **gen_kwargs),
                                                         instance_list, chunksize=32), desc='Generating Instance', total=len(instance_list))))
                 
-            train_instance = sample_instance(train_rdf)
-            val_instance = sample_instance(val_rdf)
+            # train_instance = sample_instance(train_rdf)
+            # val_instance = sample_instance(val_rdf)
             
             dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_EDGES}"
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
@@ -287,18 +272,23 @@ if __name__ == "__main__":
             raw_dir.mkdir(exist_ok=True)
             raw_city_dir = raw_dir / f"{city}_{region_id}_{N_EDGES}"
             raw_city_dir.mkdir(exist_ok=True)
-            with open(raw_city_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
-                pickle.dump(train_instance, f)
-            with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
-                pickle.dump(val_instance, f)
-            with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
-                pickle.dump((rdf, graph, gdf_nodes), f)
+            # with open(raw_city_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
+            #     pickle.dump(train_instance, f)
+            # with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
+            #     pickle.dump(val_instance, f)
+            # with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
+            #     pickle.dump((rdf, graph, gdf_nodes), f)
             # save fixed size problems to another dir
             for size in (100, 200, 500, 1000):
-                instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
+                # instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
+                # if instance:
+                #     with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
+                #         pickle.dump(instance, f)
+                instance = sample_instance(train_rdf, windows=['W'], gen_kwargs={'gen_count': 512, 'gen_frac': size})
                 if instance:
-                    with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
+                    with open(raw_city_dir / (dataset_name_template % f"train_fixed_{size}" + ".pkl"), "wb") as f:
                         pickle.dump(instance, f)
+            continue
             # generate additional features
             additional_feats = {}
             for feat in FEATS:

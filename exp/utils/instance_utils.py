@@ -1,7 +1,7 @@
-import os
 import numpy as np
 from utils.utils import map_wrapper
 from subprocess import check_call, DEVNULL
+from pathlib import Path
 
 def write_instance(instance, instance_name, instance_file, write_special=False, zero_start=False):
     shift = 0 if zero_start else 1
@@ -194,21 +194,40 @@ write_candidate_dispather = {
     "CVRPTW": write_candidate_CVRPTW
 }
 
-def solve_kopt(instance, instance_name, node_num, candidates, param_dir, instance_dir, candidate_dir, output_dir, max_trials=1000000):
+def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, output_dir, candidates=None, candidate_dir=None, collect_tour=False, max_trials=1000000):
     para_file = param_dir / f"{instance_name}.para"
     instance_file = instance_dir / f"{instance_name}.cvrp"
-    candidate_file = candidate_dir / f"{instance_name}.candidates"
-    output_file = output_dir /  f"{instance_name}.pth"
-
+    output_file = output_dir /  f"{instance_name}.npy"
+    if collect_tour:
+        tour_file = output_dir / f"{instance_name}_tour.npy"
+    if type(candidates) is np.ndarray:
+        candidate_type = "external"
+        assert (type(candidate_dir) is Path)
+    elif candidates is None or candidates == "alpha":
+        candidate_type = "alpha"
+    else:
+        raise RuntimeError(f"Fail to parse candidates {candidates}")
+    
     write_instance(instance, instance_name, instance_file, write_special=True, zero_start=True)
-    with candidate_file.open('w') as f:
-        f.write(f"{node_num}\n")
-        for node_candidates in candidates[:node_num]:
-            f.write(' '.join(map(str, node_candidates)))
-            f.write('\n')
+    if candidate_type == "external":
+        candidate_file = candidate_dir / f"{instance_name}.candidates"
+        with candidate_file.open('w') as f:
+            f.write(f"{node_num}\n")
+            for node_candidates in candidates[:node_num]:
+                f.write(' '.join(map(str, node_candidates)))
+                f.write('\n')
     with para_file.open('w') as f:
         f.write(f"problem_path = \"{instance_file}\"\n")
-        f.write(f"candidate_path = \"{candidate_file}\"\n")
+        f.write(f"candidate_type = \"{candidate_type}\"\n")
+        if candidate_type == 'external':
+            f.write(f"candidate_path = \"{candidate_file}\"\n")
+        else:
+            f.write(f"candidate_count = {node_num}\n")
         f.write(f"trial_limit = {max_trials}\n")
-    check_call(["./zyclk", para_file, output_file])
-    return np.load(output_file)
+
+    if collect_tour:
+        check_call(["./zyclk", para_file, output_file, tour_file])
+        return np.load(output_file), np.load(tour_file)
+    else:
+        check_call(["./zyclk", para_file, output_file])
+        return np.load(output_file)
