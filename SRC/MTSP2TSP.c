@@ -62,7 +62,9 @@ void MTSP2TSP()
                 FirstNode = N;
             else
                 Link(Prev, N);
-            N->Special = 0;
+            if (!UseExternalSpecial) {
+                N->Special = 0;
+            }
         }
         Link(N, FirstNode);
         if (MergeTourFiles >= 1) {
