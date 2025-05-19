@@ -263,8 +263,8 @@ if __name__ == "__main__":
                 return list(chain(*tqdm.tqdm(pool.imap(functools.partial(generate_function, graph_coords, additional_statistic, seed=args.seed, **gen_kwargs),
                                                         instance_list, chunksize=32), desc='Generating Instance', total=len(instance_list))))
                 
-            # train_instance = sample_instance(train_rdf)
-            # val_instance = sample_instance(val_rdf)
+            train_instance = sample_instance(train_rdf)
+            val_instance = sample_instance(val_rdf)
             
             dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_EDGES}"
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
@@ -272,23 +272,18 @@ if __name__ == "__main__":
             raw_dir.mkdir(exist_ok=True)
             raw_city_dir = raw_dir / f"{city}_{region_id}_{N_EDGES}"
             raw_city_dir.mkdir(exist_ok=True)
-            # with open(raw_city_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
-            #     pickle.dump(train_instance, f)
-            # with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
-            #     pickle.dump(val_instance, f)
-            # with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
-            #     pickle.dump((rdf, graph, gdf_nodes), f)
+            with open(raw_city_dir / (dataset_name_template % "train_raw" + ".pkl"), "wb") as f:
+                pickle.dump(train_instance, f)
+            with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
+                pickle.dump(val_instance, f)
+            with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
+                pickle.dump((rdf, graph, gdf_nodes), f)
             # save fixed size problems to another dir
             for size in (100, 200, 500, 1000):
-                # instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
-                # if instance:
-                #     with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
-                #         pickle.dump(instance, f)
-                instance = sample_instance(train_rdf, windows=['W'], gen_kwargs={'gen_count': 512, 'gen_frac': size})
+                instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
                 if instance:
-                    with open(raw_city_dir / (dataset_name_template % f"train_fixed_{size}" + ".pkl"), "wb") as f:
+                    with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
                         pickle.dump(instance, f)
-            continue
             # generate additional features
             additional_feats = {}
             for feat in FEATS:

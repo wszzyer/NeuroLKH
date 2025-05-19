@@ -70,7 +70,7 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
     @map_wrapper
     def make_edge_indice(dist_mat, size):
         nn_indice = np.argsort(dist_mat, -1)
-        alpha_values, alpha_indice = get_alpha(dist_mat[:size][:, :size], n_edges, not extend)
+        alpha_values, alpha_indice = get_alpha(dist_mat[:size][:, :size], n_edges)
         for nn_index, alpha_value, alpha_index in zip(nn_indice, alpha_values, alpha_indice):
             legal_len = n_edges - np.isinf(alpha_value).sum()
             legal_part = alpha_index[:legal_len]

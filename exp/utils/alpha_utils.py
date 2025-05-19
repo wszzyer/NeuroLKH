@@ -28,20 +28,23 @@ def get_mst(dist_mat):
             break
     return tree
 
-def get_one_tree(dist_mat, diag_zero=True):
+def get_one_tree(dist_mat):
     mst = get_mst(dist_mat)
-    leaves = list(map(lambda pair: pair[0], filter(lambda pair: len(pair[1]) == 1, mst.items())))
-    if diag_zero:
-        one_node = leaves[np.argmin(np.sort(dist_mat[leaves], axis=-1)[:, 2])]
-        one_target = np.argsort(dist_mat[one_node])[2]
-    else:
-        one_node = leaves[np.argmin(np.sort(dist_mat[leaves], axis=-1)[:, 1])]
-        one_target = np.argsort(dist_mat[one_node])[1]
+    leaves, stalks = zip(*map(lambda pair: (pair[0], pair[1][0]), filter(lambda pair: len(pair[1]) == 1, mst.items())))
+    leaves_second_lengths = []
+    for leaf, stalk, leaf_dists in zip(leaves, stalks, dist_mat[list(leaves)]):
+        arg_sorted_leaf_dists = sorted(enumerate(leaf_dists), key=lambda pair: pair[1])
+        for index, dist in arg_sorted_leaf_dists:
+            if index != leaf and index != stalk:
+                leaves_second_lengths.append((leaf, index, dist))
+                break
+    leaves_second_lengths.sort(key=lambda triple: triple[2])
+    one_node, one_target, _ = leaves_second_lengths[0]
     add_to_bigraph(mst, one_node, one_target)
     return one_node, one_target, mst
 
-def get_alpha(dist_mat, count, diag_zero=True):
-    one_node, one_target, one_tree = get_one_tree(dist_mat, diag_zero=diag_zero)
+def get_alpha(dist_mat, count):
+    one_node, one_target, one_tree = get_one_tree(dist_mat)
     longer_length = dist_mat[one_node][one_target]
     n = dist_mat.shape[0]
 
