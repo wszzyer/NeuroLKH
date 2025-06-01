@@ -21,52 +21,40 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=32, help='')
     parser.add_argument('--num_candidates', type=int, default=5, help='')
     parser.add_argument('--num_edges', type=int, default=20, help='')
-    parser.add_argument("--num_cpus", type=int, default=32, help="num cpus POOL")
+    parser.add_argument("--num_cpus", type=int, default=24, help="num cpus POOL")
     parser.add_argument('--use_feats', type=str, action='extend', default=["sssp"], nargs='+', help='')
     parser.add_argument('--device', type=str, default="cuda:0", help='')
     parser.add_argument('--work_dir', type=str, default="./evaluation", help='')
     parser.add_argument('--output_file', type=str, default='a.out', help='')
-    parser.add_argument('--num_trials', type=int, default=30000, help='')
+    parser.add_argument('--num_trials', type=int, default=3000, help='')
+    parser.add_argument('--seed', type=int, default=42, help='')
     return parser.parse_args()
 
 from feats import parse_feat_strs
 from utils.instance_utils import read_performance, solve_LKH, solve_kopt
 from utils.generate_utils import make_edge_feat, make_node_feat
 
-def make_candidates(net, test_loader, candidate_count=5, is_cvrptw=False):
+def make_kopt_info(net, test_loader, candidate_count=10):
+    node_weights = []
     candidate = []
-    candidate2 = []
     for batch in tqdm(test_loader, desc="inferring model"):
         node_feat, edge_feat, edge_index, pad_mask = map(lambda t: t.to(args.device), batch)
         batch_size = node_feat.size(0)
         n_nodes = node_feat.size(1)
         n_edges = edge_feat.size(1) // n_nodes
-        if not is_cvrptw:
-            y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
-        else:
-            # TODO:Fix CVRPTW
-            y_edge, y_edge2,  _, _, y_nodes = net.directed_forward(node_feat, edge_feat, edge_index, inverse_edge_index, None, None, None, 20)
-        
+        y_node, y_edge = net.forward(node_feat, edge_feat, edge_index, pad_mask)
+        p_node = torch.softmax(y_node.squeeze(), dim=-1)
+        node_weights.append(p_node)
         y_edge = y_edge.detach().cpu().numpy()
         y_edge = y_edge[..., 1].reshape(batch_size, n_nodes, n_edges)
         y_edge = np.argsort(-y_edge, -1)
         edge_index = edge_index.cpu().numpy().reshape(batch_size, n_nodes, n_edges)
         candidate_index = edge_index[*np.ogrid[:batch_size, :n_nodes, :1][:-1], y_edge]
         candidate.append(candidate_index[:, :, :candidate_count])
-        # if is_cvrptw:
-        #     y_edge2 = y_edge2.detach().cpu().numpy()
-        #     y_edge2 = y_edge2[:, :, 1].reshape(batch_size, node_feat.shape[1], 20)
-        #     y_edge2 = np.argsort(-y_edge2, -1)
-        #     candidate2_index = edge_index[np.arange(batch_size).reshape(-1, 1, 1), np.arange(y_edge2.shape[1]).reshape(1, -1, 1), y_edge2]
-        #     candidate2.append(candidate2_index[:, :, :max_candidate])
 
+    node_weights = np.concatenate(node_weights, 0)
     candidate = np.concatenate(candidate, 0)
-    return candidate
-    # if not is_cvrptw:
-    #     return candidate
-    # else:
-    #     candidate2 = np.concatenate(candidate2, 0)
-    #     return candidate, candidate2
+    return node_weights, candidate
 
 def eval_model(dataset, geo, args, work_dir, max_trials):
     instance_dir = work_dir / "instance"
@@ -104,21 +92,23 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
     # net.to(args.device) 
     # net.load_state_dict(torch.load(args.model_path, weights_only=True))
     net.load_state_dict(torch.load(args.model_path, weights_only=True), assign=True)
+    net.eval()
     model_start_time = time.time()
     test_dataset = LaDeTestDataset(args.problem.lower(), node_feat, edge_feat, edge_index, node_num, node_feats_cls, edge_feats_cls)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
     with torch.no_grad():
         if args.problem == "CVRP":
-            candidate = make_candidates(net, test_loader, candidate_count=args.num_candidates, is_cvrptw=False)
-            candidate2 = [None] * len(candidate)
-        else:
-            candidate, candidate2 = make_candidates(net, test_loader, candidate_count=args.num_candidates, is_cvrptw=True)
+            node_weights, candidates = make_kopt_info(net, test_loader, candidate_count=args.num_candidates)
     model_runtime = time.time() - model_start_time
 
     # results = list(tqdm(POOL.imap(solve_LKH, [("Model", read_performance, instance_dir, param_dir, output_dir, dataset[i], str(i), args.num_candidates,
     #                                            True, max_trials, candidate_dir, candidate[i], candidate2[i], node_num[i]) for i in range(len(dataset))]),
     #                                             desc="Solving Problems", total=len(dataset)))
-    results = list(tqdm((solve_kopt(dataset[i], str(i), node_num[i], param_dir, instance_dir, output_dir, candidate[i], candidate_dir, False, max_trials) for i in range(len(dataset))),
+    def wrapper(func):
+        def call(args):
+            return func(*args)
+        return call
+    results = list(tqdm(POOL.imap(wrapper(solve_kopt), [(dataset[i], str(i), node_num[i], param_dir, instance_dir, output_dir, "perf", node_weights[i], candidates[i], candidate_dir, max_trials, args.seed) for i in range(len(dataset))], chunksize=8),
                         desc='Solving with k-opt', total=len(dataset)))
     results = np.stack(results).transpose(1, 0, 2)
     return results, feat_runtime, model_runtime

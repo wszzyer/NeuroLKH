@@ -45,13 +45,13 @@ do
         echo "Please run LKH for $data_name first!"
         exit 1
     fi
-    if [[ ! -d "./saved/$exp_name" ]]
+  if [[ ! -d "./saved/$exp_name" ]]
     then
         continue
     fi
     python ./lade_CVRP_test.py --problem CVRP --data_dir $data_dir/raw_instance/$data_name --geo_path $data_dir/raw_instance/CVRP_geo_raw_scatter_$data_name.pkl \
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
             --use_feats $use_feats --output_file $result_dir/$data_name/$exp_name".pkl" \
-            --num_trials 300000 --num_candidates 10 || exit $?;
+            --num_trials 10000 --num_candidates 10 || exit $?;
     rm -rf ./evaluation/$data_name/
 done

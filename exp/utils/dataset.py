@@ -37,10 +37,10 @@ class LaDeDataset(Dataset):
         if label_type == "lkh":
             label_name = "label"
         elif label_type == "ours":
-            label_name = "new_label"
+            label_name = "edge_label"
         else:
             raise RuntimeError(f"{label_type} is an invalid label type")
-        self.key_list = ["node_feat", "edge_feat", label_name, "edge_index", "pad_mask"]
+        self.key_list = ["node_feat", "edge_feat", "node_label", label_name, "edge_index", "pad_mask"]
         logger.info(f"Load dataset from {self.file_path}, max size {self.dataset["node_feat"].shape[1]}")
 
     def __iter__(self):
@@ -61,10 +61,11 @@ class LaDeDataset(Dataset):
     def collate_fn(self, samples):
         node_feat = torch.tensor(samples[0], dtype=torch.float32) # B x N x feat_num
         edge_feat = torch.tensor(samples[1], dtype=torch.float32).flatten(1, -2) # B x (N x N) x feat_num
-        label = torch.tensor(samples[2], dtype=torch.long) # B x (2) x 1000
-        edge_index = torch.tensor(samples[3], dtype=torch.int32) # B x N x N x edge_num
-        pad_mask = torch.tensor(samples[4], dtype=torch.bool)
-        return node_feat, edge_feat, label, edge_index, pad_mask
+        node_label = torch.tensor(samples[2], dtype=torch.float32) # B x N
+        edge_label = torch.tensor(samples[3], dtype=torch.long) # B x (2) x 1000
+        edge_index = torch.tensor(samples[4], dtype=torch.int32) # B x N x N x edge_num
+        pad_mask = torch.tensor(samples[5], dtype=torch.bool)
+        return node_feat, edge_feat, node_label, edge_label, edge_index, pad_mask
 
 class LaDeTestDataset(Dataset):
     def __init__(self, problem, node_feat, edge_feat, edge_index, node_num, extra_node_feats_class, edge_feats_class):

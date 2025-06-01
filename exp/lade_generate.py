@@ -12,7 +12,7 @@ import numpy as np
 from feats import get_all_feats, SSSPFeat
 from utils.lade_utils import fetch_lade, get_bbox_from_coords, load_shapefile_osm_osmnx, fetch_shapefile_osm_osmnx, has_map, transform_crs, SOURCE_CRS, TARGET_CRS
 from utils.instance_utils import read_solution, solve_LKH, solve_kopt
-from utils.generate_utils import make_node_feat, make_edge_feat, tour_to_label
+from utils.generate_utils import make_node_feat, make_edge_feat, make_node_label, tour_to_label
 
 allow_extend_nodes = None # 在将 VRP 转化为 TSP 时，会添加一些额外节点，这个选项表示神经网络的输入是否包含额外节点。如果不允许额外节点，经过额外节点的路径相当于经过 0 号节点。
 split_edge_label = None # 是否分开考虑 edge 的 label。每个点有一个入边 label 和一个出边 label，在对称问题 CVRP 中两类 label 可以合并，在非对称问题 CVRPTW 中两类 label 需要分开。
@@ -129,32 +129,34 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
     instance_dir = tmp_dir / dataset_name / "instance"
     LKH_param_dir = tmp_dir / dataset_name /  "LKH_para"
     LKH_log_dir = tmp_dir / dataset_name /  "LKH_log"
+    node_perturb_dir = tmp_dir / dataset_name / "perturb"
     generated_dir = output_dir / "generated"
     
     instance_dir.mkdir(exist_ok=True, parents=True)
     LKH_param_dir.mkdir(exist_ok=True)
     LKH_log_dir.mkdir(exist_ok=True)
+    node_perturb_dir.mkdir(exist_ok=True)
     generated_dir.mkdir(exist_ok=True)
     
     # construct node features.
     node_feat = make_node_feat(dataset, additional_feats, max_nodes)
     edge_feat, edge_index = make_edge_feat(dataset, additional_feats, max_nodes, N_EDGES, extend=allow_extend_nodes, node_num=node_num, pool=pool)
 
+    node_label = make_node_label(dataset, node_perturb_dir, node_num, max_nodes, pool=pool)
     # The sizes of the problems varies greatly. A large chunksize will cause great inbalance between threads.
     results = list(tqdm.tqdm(pool.imap(solve_LKH, [("LabelGen", read_solution, instance_dir, LKH_param_dir, LKH_log_dir, dataset[i], str(i), N_EDGES,
                                         True, 1000, tmp_dir / dataset_name / "feat") for i in range(len(dataset))], chunksize=8), total=len(dataset), desc='Acquiring LKH Result'))
     # NOTE: TSP result need extra postprocessing.
-    _, new_results =  list(zip(*tqdm.tqdm((solve_kopt(instance, f"CASE_{i}", N_EDGES, LKH_param_dir, instance_dir, LKH_log_dir, max_trials=300000, collect_tour=True) for i, instance in enumerate(dataset)), total=len(dataset))))
-    new_results
-    # construct edge label.
+    _, new_results =  list(zip(*tqdm.tqdm((solve_kopt(instance, f"CASE_{i}", N_EDGES, LKH_param_dir, instance_dir, LKH_log_dir, "perfsolve", None, None, None, 10000) for i, instance in enumerate(dataset)), total=len(dataset))))
     
     feat = {
         "node_feat": node_feat,
         "edge_feat": edge_feat,
         "edge_index": edge_index,
         "node_num": node_num,
+        "node_label": node_label,
         "label": tour_to_label(results, max_nodes, edge_index),
-        "new_label": tour_to_label(new_results, max_nodes, edge_index)
+        "edge_label": tour_to_label(new_results, max_nodes, edge_index)
     }
 
     with (generated_dir / f"{dataset_name}.pkl").open("wb") as f:

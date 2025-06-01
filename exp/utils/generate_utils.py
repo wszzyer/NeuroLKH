@@ -1,6 +1,6 @@
 from feats import get_all_feats, SSSPFeat
 from .instance_utils import *
-import tqdm
+from tqdm import tqdm, trange
 from .alpha_utils import get_alpha
 
 import numpy as np
@@ -37,7 +37,7 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
     # 1. Make weights.
     dist_mat_list = []
     if extend:
-        for instance, extended_size in tqdm.tqdm(zip(dataset, node_num), total=len(dataset), desc="Selecting Edges"):
+        for instance, extended_size in tqdm(zip(dataset, node_num), total=len(dataset), desc="Selecting Edges"):
             # LKH Exodus Note: Pad extended nodes as Depot and add "Special" nodes. 
             # See "An Improved Transformation of the Symmetric Multiple Traveling Salesman Problem" for details.
             # See MTSP2TSP.c:76 (especially Forbidden.c:31) for LKH implementation.
@@ -82,7 +82,7 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
                 current_nn += 1
         return pad_zero(alpha_indice, ((0, dist_mat.shape[0] - size), (0, 0))), alpha_values
     _map = partial(pool.imap, chunksize=chunksize) if pool else map
-    edge_index, alpha_values = zip(*tqdm.tqdm(_map(make_edge_indice, zip(dist_mat_list, sizes)), total=len(dataset), desc="Making Edge Index"))
+    edge_index, alpha_values = zip(*tqdm(_map(make_edge_indice, zip(dist_mat_list, sizes)), total=len(dataset), desc="Making Edge Index"))
     edge_index = np.stack(edge_index)
 
     # 3. Construct feats.
@@ -94,7 +94,7 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
             continue
         # This feat mat can be tremendously large so we make chunks here.
         chunk_feat_list = []
-        for index in tqdm.trange(0, len(dataset), chunksize, desc="Making Edge Feature"):
+        for index in trange(0, len(dataset), chunksize, desc="Making Edge Feature"):
             current_chunksize = min(chunksize, len(dataset) - index)
             slice_index = slice(index, index + chunksize)
             # We have to do something special for CVRP problem on weight, and we hope that the model can make use of this too.
@@ -106,6 +106,34 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
             chunk_feat_list.append(feat[sample_index[:current_chunksize], node_index, edge_index[slice_index]])
         edge_feat_list.append(np.concatenate(chunk_feat_list, axis=0))
     return np.stack(edge_feat_list, -1), edge_index
+
+def make_node_label(dataset, work_dir, node_num, max_nodes, solver_n_edges=20, max_runs=50, trial_ratio=2, length_ratio=10, pool=None):
+    if pool is None:
+        _map = map
+    else:
+        _map = pool.imap # chunksize = 1
+    def _node_label_maker(packed_args):
+        instance, index, size = packed_args
+        max_trials_per_run = min(250, int(size * trial_ratio))
+        max_log_length = int(size * length_ratio)
+        nodes_list = []
+        edges_list = []
+        total_len = 0
+        for _run_count in range(max_runs):
+            if total_len >= max_log_length:
+                break
+            success_nodes, success_edges = solve_kopt(instance, str(index), solver_n_edges, work_dir, work_dir, work_dir, mode="log_perturb", max_trials=max_trials_per_run)
+            nodes_list.append(success_nodes)
+            edges_list.append(success_edges)
+            total_len += success_nodes.shape[0]
+        nodes_list.append(np.arange(size))
+        unique_points, freq = np.unique(np.concatenate(nodes_list), return_counts=True)
+        # if base_number != 1:
+        #     freq = np.power(base_number, freq)
+        # print(f"Size: {size}, Runs: {_run_count} / {max_runs}, Logs: {total_len} / {max_log_length}")
+        return pad_zero(freq / freq.sum(), (0, max_nodes - size))
+    return np.stack(list(tqdm(_map(_node_label_maker, ((instance, index, size) for index, (instance, size) in enumerate(zip(dataset, node_num)))),
+                               total=len(dataset), desc="Perturbing Nodes")))
 
 def tour_to_label(tours, label_size, edge_index, split_label=False):
     tour_count = len(tours)

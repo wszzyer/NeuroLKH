@@ -88,6 +88,7 @@ class GraphEncoderLayer(nn.Module):
         node_count, batch_size, hidden_size = x.shape
         # Attention part
         # x: T x B x C
+        # e: B x T x 'E' x C(E)
         residual = x
         xt = x.transpose(1, 0)
         # attn_mask = torch.zeros((batch_size, node_count, node_count), dtype=torch.bool, device=x.device)
@@ -97,7 +98,7 @@ class GraphEncoderLayer(nn.Module):
         # attn_bias = torch.zeros_like(attn_mask, dtype=torch.float32)
         attn_bias = torch.zeros((batch_size, node_count, node_count), dtype=torch.float32, device=x.device)
         # The bias will be masked as well so do not worry
-        attn_bias[batch_index, node_index, edge_index] = e.mean(dim=-1)
+        attn_bias[batch_index, node_index, edge_index] = e.mean(dim=-1) # sum? mean?
         x, attn_weights = self.self_attn(
             query=x,
             key=x,
@@ -120,8 +121,9 @@ class GraphEncoderLayer(nn.Module):
         
         # Edge part
         residual = e
-        e = self.edge_fmap(e)
-        weights = attn_weights.mean(dim=1).unsqueeze(-1)
+        e = self.edge_fmap(e) # B x N x E x C(N)
+        # attn_weights: B x H x N x N
+        weights = attn_weights.mean(dim=1).unsqueeze(-1) # B x N x N x 1
         e = e + weights[batch_index, edge_index, node_index] * xt[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, hidden_size)
         e = self.edge_attn_norm(e)
         e = self.edge_activitation(e)

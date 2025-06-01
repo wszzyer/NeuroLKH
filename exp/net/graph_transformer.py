@@ -39,7 +39,8 @@ class GraphTransformer(nn.Module):
         self.nodes_embedding = nn.Linear(node_dim, node_hidden_dim, bias=False)
         self.edges_embedding = nn.Linear(edge_dim, edge_hidden_dim, bias=False)
 
-        self.mlp = MLP(edge_hidden_dim, node_hidden_dim, 2)
+        self.node_mlp = MLP(node_hidden_dim, node_hidden_dim, 1)
+        self.edge_mlp = MLP(edge_hidden_dim, node_hidden_dim, 2)
 
     def forward(self, node_feat, edge_feat, edge_index, reachability):
         batch_size = node_feat.size(0)
@@ -56,5 +57,6 @@ class GraphTransformer(nn.Module):
             key_padding_mask=reachability,
             edge_index=edge_index,
         )
-        y_edges = self.mlp.to(e.device)(e)
-        return x.transpose(0, 1), y_edges
+        y_nodes = self.node_mlp.to(x.device)(x)
+        y_edges = self.edge_mlp.to(e.device)(e)
+        return y_nodes.transpose(0, 1), y_edges

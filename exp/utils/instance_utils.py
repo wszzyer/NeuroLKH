@@ -1,7 +1,13 @@
 import numpy as np
 from utils.utils import map_wrapper
-from subprocess import check_call, DEVNULL
-from pathlib import Path
+from subprocess import check_call, DEVNULL, CalledProcessError
+
+def try_call(argv, *args, **kwargs):
+    try:
+        check_call(argv, *args, **kwargs)
+    except CalledProcessError as e:
+        print("Failed Call: " + ' '.join(map(str, argv)))
+        raise e
 
 def write_instance(instance, instance_name, instance_file, write_special=False, zero_start=False):
     shift = 0 if zero_start else 1
@@ -117,7 +123,7 @@ def read_performance(log_file, _, max_trials):
                 runtimes.append(float(line[-1]))
         final_obj = int(lines[-11].split(",")[0].split(" ")[-1])
         assert objs[-1] == final_obj
-        return objs, penalties, runtimes
+        return objs, runtimes, penalties
     
 
 def write_candidate_CVRP(feat_file, candidate, n_nodes_extend, **unused):
@@ -185,7 +191,7 @@ def solve_LKH(task, result_hook, instance_dir, param_dir, log_dir, instance, ins
         if candidate is not None:
             write_candidate_dispather[instance["TYPE"]](feat_file=candidate_file, candidate=candidate, candidate2=candidate2, n_nodes_extend=n_nodes)
         f = open(log_file, "w") if log_file else DEVNULL
-        check_call(["./LKH", para_file], stdout=f)
+        try_call(["./LKH", para_file], stdout=f)
 
     return result_hook(log_file, candidate_file, max_trials)
 
@@ -194,15 +200,23 @@ write_candidate_dispather = {
     "CVRPTW": write_candidate_CVRPTW
 }
 
-def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, output_dir, candidates=None, candidate_dir=None, collect_tour=False, max_trials=1000000):
+def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, output_dir, mode="perf", node_weights=None, candidates=None, info_dir=None, max_trials=3000, seed=1234):
     para_file = param_dir / f"{instance_name}.para"
     instance_file = instance_dir / f"{instance_name}.cvrp"
     output_file = output_dir /  f"{instance_name}.npy"
-    if collect_tour:
-        tour_file = output_dir / f"{instance_name}_tour.npy"
+    if mode == "perf":
+        exe_path = "./zyclk"
+        subsidiary_output = None
+    elif mode == "perfsolve":
+        exe_path = "./zyclk"
+        subsidiary_output = output_dir / f"{instance_name}_tour.npy"
+    elif mode == "log_perturb":
+        exe_path = "./zyclk_log_perturb"
+        subsidiary_output = output_dir / f"{instance_name}_edges.npy"
+    else:
+        raise RuntimeError(f"No such solve mode: {mode}")
     if type(candidates) is np.ndarray:
         candidate_type = "external"
-        assert (type(candidate_dir) is Path)
     elif candidates is None or candidates == "alpha":
         candidate_type = "alpha"
     else:
@@ -210,12 +224,17 @@ def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, outpu
     
     write_instance(instance, instance_name, instance_file, write_special=True, zero_start=True)
     if candidate_type == "external":
-        candidate_file = candidate_dir / f"{instance_name}.candidates"
+        candidate_file = info_dir / f"{instance_name}.candidates"
         with candidate_file.open('w') as f:
             f.write(f"{node_num}\n")
             for node_candidates in candidates[:node_num]:
-                f.write(' '.join(map(str, node_candidates)))
-                f.write('\n')
+                f.write(" ".join(map(str, node_candidates)))
+                f.write("\n")
+    if mode != "log_perturb" and not node_weights is None:
+        node_weights_file = info_dir / f"{instance_name}.weights"
+        with node_weights_file.open('w') as f:
+            f.write(" ".join(map(lambda weight: f"{weight:.5f}", node_weights[:node_num])))
+            f.write("\n")
     with para_file.open('w') as f:
         f.write(f"problem_path = \"{instance_file}\"\n")
         f.write(f"candidate_type = \"{candidate_type}\"\n")
@@ -224,10 +243,14 @@ def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, outpu
         else:
             f.write(f"candidate_count = {node_num}\n")
         f.write(f"trial_limit = {max_trials}\n")
+        if not node_weights is None:
+            f.write(f"swap_weight_path = \"{node_weights_file}\"\n")
+        if mode != "log_perturb":
+            f.write(f"seed = {seed}\n")
 
-    if collect_tour:
-        check_call(["./zyclk", para_file, output_file, tour_file])
-        return np.load(output_file), np.load(tour_file)
+    if subsidiary_output:
+        try_call([exe_path, para_file, output_file, subsidiary_output])
+        return np.load(output_file), np.load(subsidiary_output)
     else:
-        check_call(["./zyclk", para_file, output_file])
+        try_call([exe_path, para_file, output_file])
         return np.load(output_file)
