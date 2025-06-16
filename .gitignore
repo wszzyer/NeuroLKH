@@ -10,3 +10,4 @@ LKH
 .vscode/
 *.ipynb
 todo
+/baseline/solution/temp/
