@@ -30,7 +30,7 @@ def write_HGS_instance(instance, instance_name, instance_file):
     write_instance(instance, instance_name, instance_file, False)
 
 
-def solve_HGS(instance_file, max_iter=5000, max_runtime=7200):
+def solve_HGS(instance_file, max_iter=5000, max_runtime=3600):
     instance = HGS_read(instance_file)
     model = HGSModel.from_data(instance)
     stop_crit = MultipleCriteria([MaxIterations(max_iter), MaxRuntime(max_runtime)])

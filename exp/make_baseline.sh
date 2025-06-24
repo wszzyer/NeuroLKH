@@ -22,8 +22,8 @@ do
     #     continue
     fi
     python ./lade_CVRP_baseline.py --problem CVRP --data_dir "$data_dir"/raw_instance/$data_name \
-            --num_candidates 20 --work_dir ./evaluation/   \
+            --num_candidates 10 --work_dir ./evaluation/   \
             --baselines lkh hgs \
             --output_file "$result_dir"/$data_name/"baseline.pkl" \
-            --num_trials 30000 || exit $?;
+            --num_trials 10000 || exit $?;
 done

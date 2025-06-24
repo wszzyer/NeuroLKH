@@ -107,32 +107,46 @@ def make_edge_feat(dataset, additional_feats, max_nodes, n_edges, extend=False, 
         edge_feat_list.append(np.concatenate(chunk_feat_list, axis=0))
     return np.stack(edge_feat_list, -1), edge_index
 
-def make_node_label(dataset, work_dir, node_num, max_nodes, solver_n_edges=20, max_runs=50, trial_ratio=2, length_ratio=10, pool=None):
+def make_stat_table(dataset, work_dir, node_num, max_nodes, edge_indice, max_runs=50, trial_ratio=1.8, length_ratio=8, edge_ratio=0.05, pool=None):
     if pool is None:
         _map = map
     else:
         _map = pool.imap # chunksize = 1
-    def _node_label_maker(packed_args):
-        instance, index, size = packed_args
+    def _stat_label_maker(packed_args):
+        instance, index, edge_index, size = packed_args
         max_trials_per_run = min(250, int(size * trial_ratio))
         max_log_length = int(size * length_ratio)
         nodes_list = []
         edges_list = []
+        align = int(max_nodes).bit_length() # In case we get a np.int
         total_len = 0
         for _run_count in range(max_runs):
             if total_len >= max_log_length:
                 break
-            success_nodes, success_edges = solve_kopt(instance, str(index), solver_n_edges, work_dir, work_dir, work_dir, mode="log_perturb", max_trials=max_trials_per_run)
+            success_nodes, success_edges = solve_kopt(instance, str(index), edge_index.shape[1], work_dir, work_dir, work_dir, mode="log_perturb", max_trials=max_trials_per_run)
             nodes_list.append(success_nodes)
             edges_list.append(success_edges)
             total_len += success_nodes.shape[0]
         nodes_list.append(np.arange(size))
-        unique_points, freq = np.unique(np.concatenate(nodes_list), return_counts=True)
+        _unique_nodes, node_freq = np.unique(np.concatenate(nodes_list), return_counts=True)
+        node_label = pad_zero(node_freq / node_freq.sum(), (0, max_nodes - size))
+        # For edges, it is a little bit more tricky...
+        # We treat the graph as directed here. This should not cause problem, statistically at least...
+        edges = np.concatenate(edges_list)
+        # We know that we have no more than 4096 nodes so
+        unique_edges, edge_freq =  np.unique((edges[:, 0] << align) + edges[:, 1], return_counts=True)
+        threshold = np.percentile(edge_freq, 100 - edge_ratio * 100)
+        picked_edges = unique_edges[edge_freq >= threshold]
+        picked_edge_starts = picked_edges >> align
+        picked_edge_ends = picked_edges & ((1 << align) - 1)
+        edge_label = np.zeros((max_nodes, max_nodes), dtype=np.bool_)
+        edge_label[picked_edge_starts, picked_edge_ends] = True
+        edge_label = edge_label[np.arange(max_nodes).reshape(-1, 1), edge_index]
         # if base_number != 1:
         #     freq = np.power(base_number, freq)
         # print(f"Size: {size}, Runs: {_run_count} / {max_runs}, Logs: {total_len} / {max_log_length}")
-        return pad_zero(freq / freq.sum(), (0, max_nodes - size))
-    return np.stack(list(tqdm(_map(_node_label_maker, ((instance, index, size) for index, (instance, size) in enumerate(zip(dataset, node_num)))),
+        return node_label, edge_label
+    return map(np.stack, zip(*tqdm(_map(_stat_label_maker, ((instance, index, edge_index, size) for index, (instance, edge_index, size) in enumerate(zip(dataset, edge_indice, node_num)))),
                                total=len(dataset), desc="Perturbing Nodes")))
 
 def tour_to_label(tours, label_size, edge_index, split_label=False):
