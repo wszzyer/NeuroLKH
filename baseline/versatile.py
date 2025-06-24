@@ -4,8 +4,10 @@ from pathlib import Path
 import argparse
 import numpy as np
 import pickle
+
 import multiprocessing as mp
 from tqdm import tqdm
+from solution import get_init_solution
 
 def get_args():
     parser = argparse.ArgumentParser(description='')
@@ -31,15 +33,18 @@ if __name__ == '__main__':
     else:
         record = {}
 
+    # baselines = ['ORTools', 'Gurobi', 'COPT']
+    baselines = ['Gurobi', 'COPT']
     for dataset_file in dataset_dir.iterdir():
         exp_name = path_to_name(dataset_file)
-        if 'train' in exp_name:
+        if 'train' in exp_name or '1000' in exp_name:
             continue
         with dataset_file.open('rb') as f:
             dataset = pickle.load(f)
-        if not 'ORTools' in record:
-            record['ORTools'] = {}
-        if exp_name not in record['ORTools']:
+        for baseline in baselines:
+            if not baseline in record:
+                record[baseline] = {}
+        if 'ORTools' in baselines and  exp_name not in record['ORTools']:
             record['ORTools'][exp_name] = np.stack(list(tqdm(pool.imap(ortools_impl.solve_cvrp, [{
                 'dimension': len(instance["COORD"]),
                 'capacity': instance["CAPACITY"],
@@ -47,6 +52,20 @@ if __name__ == '__main__':
                 'demand': instance["DEMAND"],
                 'edge_weight': np.where(np.isinf(instance["WEIGHT"]), 0, instance["WEIGHT"])[:instance["SIZE"], :instance["SIZE"]],
             } for instance in dataset]), desc=exp_name, total=len(dataset)))).transpose(1, 0, 2)
+            with (output_dir / 'baseline.pkl').open('wb') as f:
+                pickle.dump(record, f)
+        if 'Gurobi' in baselines and  exp_name not in record['Gurobi']:
+            performance_list = []
+            for instance in dataset: # Gurobi is multithreaded by default
+                init_tour = get_init_solution(instance)
+                performance_list.append(gurobi_impl.solve_cvrp({
+                    'dimension': len(instance["COORD"]),
+                    'capacity': instance["CAPACITY"],
+                    'depot': instance["DEPOT"] - 1,
+                    'demand': instance["DEMAND"],
+                    'edge_weight': np.where(np.isinf(instance["WEIGHT"]), 0, instance["WEIGHT"])[:instance["SIZE"], :instance["SIZE"]],
+                }, init_tour))
+            record['Gurobi'][exp_name] = np.stack(performance_list).transpose(1, 0, 2)
             with (output_dir / 'baseline.pkl').open('wb') as f:
                 pickle.dump(record, f)
     pool.close()
