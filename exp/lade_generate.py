@@ -156,7 +156,7 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
             args = args
             kwargs = {}
         return solve_kopt(*args, **kwargs)
-    _, new_results = zip(*tqdm(pool.imap(wrapped_kopt, ((instance, f"CASE_{i}", min(instance['SIZE'] - 1, 50), param_dir, instance_dir, log_dir, {'mode': "perfsolve", 'max_trials': 10000}) for i, instance in enumerate(dataset)), chunksize=16),
+    _, new_results = zip(*tqdm(pool.imap(wrapped_kopt, ((instance, f"CASE_{i}", node_num[i], param_dir, instance_dir, log_dir, {"mode": "perfsolve", "candidates": ("alpha", min(instance['SIZE'] - 1, 50)), "max_trial": 10000}) for i, instance in enumerate(dataset)), chunksize=16),
                                 total=len(dataset), desc="Solving K-opt for best solution"))
     
     feat = {

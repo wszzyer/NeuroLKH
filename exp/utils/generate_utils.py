@@ -123,7 +123,7 @@ def make_stat_table(dataset, work_dir, node_num, max_nodes, edge_indice, max_run
         for _run_count in range(max_runs):
             if total_len >= max_log_length:
                 break
-            success_nodes, success_edges = solve_kopt(instance, str(index), edge_index.shape[1], work_dir, work_dir, work_dir, mode="log_perturb", max_trials=max_trials_per_run)
+            success_nodes, success_edges = solve_kopt(instance, str(index), size, work_dir, work_dir, work_dir, mode="log_perturb", candidates=("alpha", edge_index.shape[1]), max_trials=max_trials_per_run)
             nodes_list.append(success_nodes)
             edges_list.append(success_edges)
             total_len += success_nodes.shape[0]

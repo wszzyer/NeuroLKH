@@ -200,7 +200,7 @@ write_candidate_dispather = {
     "CVRPTW": write_candidate_CVRPTW
 }
 
-def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, output_dir, mode="perf", node_weights=None, candidates=None, info_dir=None, max_trials=3000, seed=1234):
+def solve_kopt(instance, instance_name, expanded_node_num, param_dir, instance_dir, output_dir, mode="perf", node_weights=None, candidates=('alpha', 10), info_dir=None, max_trials=3000, seed=1234):
     para_file = param_dir / f"{instance_name}.para"
     instance_file = instance_dir / f"{instance_name}.cvrp"
     output_file = output_dir /  f"{instance_name}.npy"
@@ -217,8 +217,11 @@ def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, outpu
         raise RuntimeError(f"No such solve mode: {mode}")
     if type(candidates) is np.ndarray:
         candidate_type = "external"
-    elif candidates is None or candidates == "alpha":
-        candidate_type = "alpha"
+    elif type(candidates) is tuple:
+        if len(candidates) != 2:
+            raise RuntimeError(f"Invalid candidates type: {candidates}")
+        candidate_type = candidates[0]
+        candidate_count = candidates[1]
     else:
         raise RuntimeError(f"Fail to parse candidates {candidates}")
     
@@ -226,14 +229,14 @@ def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, outpu
     if candidate_type == "external":
         candidate_file = info_dir / f"{instance_name}.candidates"
         with candidate_file.open('w') as f:
-            f.write(f"{node_num}\n")
-            for node_candidates in candidates[:node_num]:
+            f.write(f"{expanded_node_num}\n")
+            for node_candidates in candidates:
                 f.write(" ".join(map(str, node_candidates)))
                 f.write("\n")
     if mode != "log_perturb" and not node_weights is None:
         node_weights_file = info_dir / f"{instance_name}.weights"
         with node_weights_file.open('w') as f:
-            f.write(" ".join(map(lambda weight: f"{weight:.5f}", node_weights[:node_num])))
+            f.write(" ".join(map(lambda weight: f"{weight:.5f}", node_weights[:expanded_node_num])))
             f.write("\n")
     with para_file.open('w') as f:
         f.write(f"problem_path = \"{instance_file}\"\n")
@@ -241,7 +244,7 @@ def solve_kopt(instance, instance_name, node_num, param_dir, instance_dir, outpu
         if candidate_type == 'external':
             f.write(f"candidate_path = \"{candidate_file}\"\n")
         else:
-            f.write(f"candidate_count = {node_num}\n")
+            f.write(f"candidate_count = {candidate_count}\n")
         f.write(f"trial_limit = {max_trials}\n")
         if not node_weights is None:
             f.write(f"swap_weight_path = \"{node_weights_file}\"\n")

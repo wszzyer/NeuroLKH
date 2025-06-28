@@ -108,7 +108,7 @@ def eval_model(dataset, geo, args, work_dir, max_trials):
         def call(args):
             return func(*args)
         return call
-    results = list(tqdm(POOL.imap(wrapper(solve_kopt), [(dataset[i], str(i), node_num[i], param_dir, instance_dir, output_dir, "perf", node_weights[i], candidates[i], candidate_dir, max_trials, args.seed) for i in range(len(dataset))], chunksize=8),
+    results = list(tqdm(POOL.imap(wrapper(solve_kopt), [(dataset[i], str(i), node_num[i], param_dir, instance_dir, output_dir, "perf", node_weights[i], ('alpha', 10), candidate_dir, max_trials, args.seed) for i in range(len(dataset))], chunksize=8),
                         desc='Solving with k-opt', total=len(dataset)))
     results = np.stack(results).transpose(1, 0, 2)
     return results, feat_runtime, model_runtime
