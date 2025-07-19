@@ -1,7 +1,7 @@
 import numpy as np
 from itertools import combinations, product
 import vrplib
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from pathlib import Path
 
 import gurobipy as gp
@@ -58,7 +58,7 @@ class TSPCallback:
                         <= len(edges) - 1
                     )
 
-def solve_cvrp(instance: Path | dict, first_solution=None):
+def solve_cvrp(instance: Path | dict, first_solution=None, max_runtime: Optional[int]=None):
     if not type(instance) is dict:
         instance = vrplib.read_instance(instance)
     dimension = int(instance['dimension'])
@@ -128,6 +128,9 @@ def solve_cvrp(instance: Path | dict, first_solution=None):
         # And no vehicle is overloaded.
         m.addConstr(u <= capacity)
         assert np.all(u_init <= capacity)
+
+        if max_runtime is not None:
+            m.setParam('TimeLimit', max_runtime)
 
         # Objective.
         m.setObjective((x * edge_weights).sum(), GRB.MINIMIZE)

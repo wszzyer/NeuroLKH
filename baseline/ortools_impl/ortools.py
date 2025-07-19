@@ -105,8 +105,8 @@ def solve_cvrp(instance: Path | dict):
     search_parameters.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
-    search_parameters.time_limit.FromSeconds(6000)
-    search_parameters.solution_limit = 5000
+    search_parameters.time_limit.FromSeconds(2000)
+    search_parameters.solution_limit = 1000
 
     result = try_solve_cvrp(instance, search_parameters, padding=search_parameters.solution_limit)
     if not result is None:

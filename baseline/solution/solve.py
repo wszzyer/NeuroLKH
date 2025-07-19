@@ -2,7 +2,7 @@ from subprocess import check_call
 from pathlib import Path
 import numpy as np
 
-WORK_DIR = Path(__file__).resolve() / 'temp'
+WORK_DIR = Path(__file__).resolve().parent / 'temp'
 if not WORK_DIR.exists():
     WORK_DIR.mkdir()
     
@@ -22,8 +22,8 @@ def get_init_solution(instance):
             f.write(f"DEPOT_SECTION\n{instance["DEPOT"] - 1}\n -1\n")
         f.write(f"SPECIAL_SECTION\n{len(instance["SPECIAL"])} {" ".join(map(str, instance["SPECIAL"]))}\n")
         f.write("EOF\n")
-    check_call([WORK_DIR / 'zyclk', WORK_DIR / 'init.para', WORK_DIR / 'init.perf', WORK_DIR / 'init.tour'])
-    tour =  np.load(WORK_DIR / 'init.tour')
+    check_call([WORK_DIR / 'zyclk_first_solution', WORK_DIR / 'init.toml', WORK_DIR / 'init.perf', WORK_DIR / 'init.tour'])
+    tour = np.load(WORK_DIR / 'init.tour')
     # Roll the tour to the depot
     for index, node in enumerate(tour):
         if node == instance['DEPOT'] - 1:
