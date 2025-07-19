@@ -30,7 +30,7 @@ def get_args():
     parser.add_argument('--load_pt', type=str, default='', help='')
     parser.add_argument('--device', type=str, action='extend', nargs='+', help='')
     parser.add_argument('--early_stop_thres', type=int, default=15)
-    parser.add_argument('--lambda_1', type=float, default=0.1)
+    parser.add_argument('--lambda_1', type=float, default=1)
     parser.add_argument('--lambda_2', type=float, default=1)
     parser.add_argument('--lambda_3', type=float, default=0.01)
     parser.add_argument('--use_feats', type=str, action='extend', default=['sssp'], nargs='+', help='')
@@ -41,7 +41,8 @@ def calculate_loss(problem, y_pred_nodes, y_pred_edges, node_label, edge_label, 
     batch_size = y_pred_edges.size(0)
     node_count = y_pred_edges.size(1)
     if problem == 'cvrp':
-        node_loss = nn.CrossEntropyLoss(reduction="none").forward(y_pred_nodes.squeeze(), node_label) * torch.sqrt(node_num / 1000)
+        node_loss_coeff = node_num / 1000
+        node_loss = nn.CrossEntropyLoss(reduction="none").forward(y_pred_nodes.squeeze(), node_label) * node_loss_coeff
         node_loss = node_loss.mean()
         # FIXME: Use log_softmax
         # p_edges = nn.functional.softmax(y_pred_edges, dim=-1).view(batch_size, -1, 2)
@@ -64,7 +65,7 @@ if __name__ == "__main__":
     torch.manual_seed(1234)
     np.random.seed(1234)
     torch.set_num_threads(16)
-    logging.basicConfig(format='[%(asctime)s][%(levelname)s]%(message)s', datefmt='%I:%M:%S', level=logging.INFO)
+    logging.basicConfig(filemode='a', format='[%(asctime)s][%(levelname)s]%(message)s', datefmt='%I:%M:%S', level=logging.INFO)
     if args.log_path:
        handler = logging.FileHandler(args.log_path)
        handler.setFormatter(logging.Formatter(fmt='[%(asctime)s][%(levelname)s]%(message)s', datefmt='%I:%M:%S'))
@@ -82,7 +83,7 @@ if __name__ == "__main__":
     net.to(args.device[0])
     os.makedirs(args.save_dir, exist_ok=True)
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
     train_dataset = LaDeDataset(file_path=args.file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem, label_type='ours')
     val_dataset = LaDeDataset(file_path=args.eval_file_path, extra_node_feats=node_feats, edge_feats=edge_feats, problem=args.problem, label_type='ours')
@@ -101,12 +102,15 @@ if __name__ == "__main__":
         net.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
     logger.info(f"bs = {args.batch_size}, lambda_1 = {args.lambda_1}, lambda_2 = {args.lambda_2}, lambda_3 = {args.lambda_3}")
+    logger.info("Node loss scaling: node_num / 1000")
     for epoch in range(start_epoch, args.n_epoch):
         statistics = {"train_loss": [],
-                     "node_loss": [],
-                     "edge_loss": [],
+                    "node_loss": [],
+                    "edge_loss": [],
                     "train_sample_count": 0,
                     "val_loss": [],
+                    "val_node_loss": [],
+                    "val_edge_loss": [],
                     "val_sample_count": 0}
         net.train()
         
@@ -133,9 +137,10 @@ if __name__ == "__main__":
             optimizer.step()
             optimizer.zero_grad()
             pbar.set_postfix({"train_loss": loss.item()})
-        logger.info(f"Epoch {epoch} loss {np.sum(statistics['train_loss'])/statistics['train_sample_count']:.6f} " + 
-               f"node_loss {np.sum(statistics['node_loss'])/statistics['train_sample_count']:.6f} "
-               f"edge_loss {np.sum(statistics['edge_loss'])/statistics['train_sample_count']:.6f}")    
+        sample_count = statistics['train_sample_count']
+        logger.info(f"Epoch {epoch} loss {np.sum(statistics['train_loss']) / sample_count:.6f} "
+               f"node_loss {np.sum(statistics['node_loss']) / sample_count:.6f} "
+               f"edge_loss {np.sum(statistics['edge_loss']) / sample_count:.6f}")    
         scheduler.step()
 
         if (epoch + 1) % args.eval_interval == 0:
@@ -165,11 +170,16 @@ if __name__ == "__main__":
                         rank_batch = np.zeros((batch_size * n_nodes, n_edges))
                         rank_batch[np.arange(batch_size * n_nodes).reshape(-1, 1), np.argsort(-y_edge[..., 1].reshape(-1, n_edges))] = np.tile(np.arange(n_edges), (batch_size * n_nodes, 1))
                         dataset_rank.append((rank_batch.reshape(-1) * edge_label.reshape(-1)).sum() / edge_label.sum())
+                    statistics["val_node_loss"].append(args.lambda_1 * node_loss.detach().cpu().numpy() * batch_size)
+                    statistics["val_edge_loss"].append(args.lambda_2 * edge_loss.detach().cpu().numpy() * batch_size)
                     statistics["val_loss"].append(loss.detach().cpu().numpy() * batch_size)
                     statistics["val_sample_count"] += batch_size
-            avg_loss = np.sum(statistics["val_loss"])/statistics['val_sample_count']
-            logger.info(f"{args.eval_file_path} loss {avg_loss:.7f}" +
-                   (f" Avg rank: {np.mean(dataset_rank):3f}" if dataset_rank else ""))
+            sample_count = statistics['val_sample_count']
+            avg_loss = np.sum(statistics["val_loss"]) / sample_count
+            logger.info(f"{args.eval_file_path} loss {avg_loss:.7f}"
+                        f" Node loss {np.sum(statistics['val_node_loss']) / sample_count:.6f}"
+                        f" Edge loss {np.sum(statistics['val_edge_loss']) / sample_count:.6f}"
+                   f" Avg rank: {np.mean(dataset_rank):3f}" if dataset_rank else "")
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 worse_count = 0

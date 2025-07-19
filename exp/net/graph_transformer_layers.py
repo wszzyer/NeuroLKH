@@ -61,13 +61,13 @@ class GraphEncoderLayer(nn.Module):
         # Initialize blocks
         self.self_attn = MultiheadAttention(node_embedding_dim, num_attention_heads, dropout=attention_dropout, device=device)
         self.node_ffn = DoubleLinear(node_embedding_dim, ffn_embedding_dim, dropout=activation_dropout, device=device)
-        self.edge_fmap = nn.Linear(edge_embedding_dim, node_embedding_dim, device=device)
+        self.node_fmap = nn.Linear(node_embedding_dim, edge_embedding_dim, device=device)
         self.edge_activitation = nn.GELU()
-        self.edge_bmap = nn.Linear(node_embedding_dim, edge_embedding_dim, device=device)
+        self.edge_bmap = nn.Linear(edge_embedding_dim, edge_embedding_dim, device=device)
 
         # layer norm associated with the self attention layer
         self.node_attn_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
-        self.edge_attn_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
+        self.edge_attn_norm = nn.LayerNorm((edge_embedding_dim, ), device=device)
 
         # layer norm associated with the position wise feed-forward NN
         self.node_final_norm = nn.LayerNorm((node_embedding_dim, ), device=device)
@@ -120,15 +120,20 @@ class GraphEncoderLayer(nn.Module):
         x = self.node_final_norm(x)
         
         # Edge part
+        edge_hidden_size = e.size(3)
         residual = e
-        e = self.edge_fmap(e) # B x N x E x C(N)
+        # e: B x N x E x C(E)
+        ext = self.node_fmap(xt) # x: B x N x C(E)
         # attn_weights: B x H x N x N
-        weights = attn_weights.mean(dim=1).unsqueeze(-1) # B x N x N x 1
-        e = e + weights[batch_index, edge_index, node_index] * xt[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, hidden_size)
+        weights = attn_weights.mean(dim=1).unsqueeze(-1) # B x N x N x 1, this is expected to be symm
+        # e = e + weights[batch_index, node_index, edge_index] * ext[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, edge_hidden_size)
+        # e = e + weights[batch_index, node_index, edge_index] * (ext.unsqueeze(2) + ext[batch_index.reshape(-1, 1), edge_index.flatten(1)].reshape(batch_size, node_count, -1, edge_hidden_size))
+        e = e * weights[batch_index, node_index, edge_index]
         e = self.edge_attn_norm(e)
-        e = self.edge_activitation(e)
+        residual = e
         e = self.edge_bmap(e)
-        e = residual + e
+        e = self.edge_activitation(e)
+        e = e + residual
         e = self.edge_final_norm(e)
 
         return x, e
