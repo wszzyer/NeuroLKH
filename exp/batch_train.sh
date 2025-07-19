@@ -41,6 +41,7 @@ then
 fi
 data_dir="./data"
 batch_size=16
+command_prefix=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --device)
@@ -59,6 +60,10 @@ while [[ $# -gt 0 ]]; do
     --batch_size)
         batch_size="$2"
         shift 2
+        ;;
+    --dry_run)
+        command_prefix="echo "
+        shift 1
         ;;
     *)
         echo "Unknown option $1"
@@ -85,7 +90,7 @@ do
     then
         continue
     fi
-    python ./lade_CVRP_train.py \
+    $command_prefix python ./lade_CVRP_train.py \
         --problem ${problem^^} \
         --file_path $train_instance --eval_file_path $val_instance \
         --save_dir ./saved/$exp_name/$data_name --lambda_3 $ramuda \

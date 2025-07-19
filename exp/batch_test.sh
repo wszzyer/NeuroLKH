@@ -17,6 +17,7 @@ shift;
 device="cuda:0"
 data_dir="./data"
 result_dir="./result"
+command_prefix=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --device)
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
     --result_dir)
       result_dir="$2"
       shift 2
+      ;;
+    --dry_run)
+      command_prefix="echo "
+      shift 1
       ;;
     *)
       echo "Unknown option $1"
@@ -49,7 +54,8 @@ do
     then
         continue
     fi
-    python ./lade_CVRP_test.py --problem CVRP --data_dir $data_dir/raw_instance/$data_name --geo_path $data_dir/raw_instance/CVRP_geo_raw_scatter_$data_name.pkl \
+    $command_prefix python ./lade_CVRP_test.py --problem CVRP --data_dir $data_dir/raw_instance/$data_name \
+            --geo_path $data_dir/raw_instance/CVRP_geo_raw_scatter_$data_name.pkl \
             --model_path ./saved/$exp_name/$data_name/best.pth --device $device \
             --use_feats $use_feats --output_file $result_dir/$data_name/$exp_name".pkl" \
             --num_trials 10000 --num_candidates 10 || exit $?;
