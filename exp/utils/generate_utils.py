@@ -133,7 +133,6 @@ def make_stat_table(dataset, work_dir, node_num, max_nodes, edge_indice, max_run
         # For edges, it is a little bit more tricky...
         # We treat the graph as directed here. This should not cause problem, statistically at least...
         edges = np.concatenate(edges_list)
-        # We know that we have no more than 4096 nodes so
         unique_edges, edge_freq =  np.unique((edges[:, 0] << align) + edges[:, 1], return_counts=True)
         threshold = np.percentile(edge_freq, 100 - edge_ratio * 100)
         picked_edges = unique_edges[edge_freq >= threshold]
@@ -141,6 +140,7 @@ def make_stat_table(dataset, work_dir, node_num, max_nodes, edge_indice, max_run
         picked_edge_ends = picked_edges & ((1 << align) - 1)
         edge_label = np.zeros((max_nodes, max_nodes), dtype=np.bool_)
         edge_label[picked_edge_starts, picked_edge_ends] = True
+        edge_label[picked_edge_ends, picked_edge_starts] = True
         edge_label = edge_label[np.arange(max_nodes).reshape(-1, 1), edge_index]
         # if base_number != 1:
         #     freq = np.power(base_number, freq)
@@ -149,13 +149,13 @@ def make_stat_table(dataset, work_dir, node_num, max_nodes, edge_indice, max_run
     return map(np.stack, zip(*tqdm(_map(_stat_label_maker, ((instance, index, edge_index, size) for index, (instance, edge_index, size) in enumerate(zip(dataset, edge_indice, node_num)))),
                                total=len(dataset), desc="Perturbing Nodes")))
 
-def tour_to_label(tours, label_size, edge_index, split_label=False):
+def tour_to_label(tours, label_size, edge_index, node_shift=1, split_label=False):
     tour_count = len(tours)
     label = np.zeros([tour_count, label_size, label_size], dtype="bool")
     if split_label:
         label2 = np.zeros([tour_count, label_size, label_size], dtype="bool")
     for i, tour in enumerate(tours):
-        result = np.array(tour) - 1
+        result = np.array(tour) - node_shift
         label[i][result, np.roll(result, 1, -1)] = True
         if not split_label:
             label[i][np.roll(result, 1, -1), result] = True
