@@ -65,7 +65,7 @@ def eval_hgs(dataset_path, work_dir, pool=None):
         pmap = partial(process_map, max_workers=pool, total=len(dataset), desc='Solving problem with HGS')
     else:
         pmap = map
-    results = list(pmap(solve_HGS, instance_dir.iterdir()))
+    results = list(pmap(partial(solve_HGS, max_runtime=1200), instance_dir.iterdir()))
     results = np.array(results).transpose(1, 0, 2)
     return results
 
@@ -100,6 +100,7 @@ if __name__ == "__main__":
         for dataset in dataset_dir.iterdir():
             if 'train' in dataset.stem:
                 continue
+            print(f"Working on {dataset.stem}")
             result['HGS'][path_to_name(dataset)] = eval_hgs(dataset, sure_path(work_dir / "hgs"), pool=args.num_cpus)
         with output_file.open(mode='wb') as file:
             pickle.dump(result, file)
