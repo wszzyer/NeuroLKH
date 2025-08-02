@@ -18,7 +18,7 @@ else
     if [[ $feat_type == featall ]]
     then
         use_feats="od nodeheat spacesyntax"
-    elif [[ $feat_type == baseline ]]
+    elif [[ $feat_type == featnone ]]
     then
         use_feats="sssp"
     else

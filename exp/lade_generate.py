@@ -24,7 +24,8 @@ def get_args():
     parser.add_argument("--num-cpus", type=int, default=32, help="num cpus pool")
     parser.add_argument("--n-edges", type=int, default=20, help="num edges")
     parser.add_argument("--n-samples", type=int, default=1024, help="num samples")
-    parser.add_argument("--train-ratio", type=float, default=0.833, help="train dataset time ratio")
+    parser.add_argument("--train-ratio", type=float, default=0.666, help="train dataset time ratio")
+    parser.add_argument("--val-ratio", type=float, default=0.167, help="train dataset time ratio")
     parser.add_argument("--problem", type=str, default="CVRP", choices=["TSP", "CVRP", "CVRPTW", "PDP"], help="which problem")
     parser.add_argument("--cities", action="extend", nargs="+", dest="cities", help="cities to generate data")
     parser.add_argument("--n-regions", type=int, default=1, help="only generate datasets for largest `--n-regions`")
@@ -156,7 +157,7 @@ def generate_dataset(dataset, additional_feats, dataset_name, output_dir):
             args = args
             kwargs = {}
         return solve_kopt(*args, **kwargs)
-    _, new_results = zip(*tqdm(pool.imap(wrapped_kopt, ((instance, f"CASE_{i}", node_num[i], param_dir, instance_dir, log_dir, {"mode": "perfsolve", "candidates": ("alpha", min(instance['SIZE'] - 1, 50)), "max_trials": 10000}) for i, instance in enumerate(dataset)), chunksize=16),
+    _, new_results = zip(*tqdm(pool.imap(wrapped_kopt, ((instance, f"CASE_{i}", node_num[i], param_dir, instance_dir, log_dir, {"mode": "perfsolve", "candidates": ("alpha", min(instance['SIZE'] - 1, 20)), "max_trials": 7500}) for i, instance in enumerate(dataset)), chunksize=16),
                                 total=len(dataset), desc="Solving K-opt for best solution"))
     
     feat = {
@@ -213,7 +214,8 @@ if __name__ == "__main__":
             # LaDe dataset last for 6 months, so we just use the ratio 5:1 by default here.
             start_day = rdf.delivery_time.min().round("D")
             interval = (rdf.delivery_time.max() - start_day).round("D")
-            split_day = (start_day + interval * args.train_ratio).round("D")
+            train_split_day = (start_day + interval * args.train_ratio).round("D")
+            val_split_day = (start_day + interval * (args.train_ratio + args.val_ratio)).round("D")
             
             # map package point to graph node.
             package_coords = transform_crs(rdf[["lat", "lng"]].to_numpy(), SOURCE_CRS, TARGET_CRS)
@@ -221,8 +223,9 @@ if __name__ == "__main__":
             corresponding_graph_index = np.linalg.norm(package_coords[:, np.newaxis, :] - graph_coords[np.newaxis, ...], axis=-1).argmin(axis=-1)
             rdf["graph_index"] = corresponding_graph_index
 
-            train_rdf = rdf[rdf.delivery_time <= split_day]
-            val_rdf= rdf[rdf.delivery_time > split_day]
+            train_rdf = rdf[rdf.delivery_time <= train_split_day]
+            val_rdf = rdf[(rdf.delivery_time > train_split_day) & (rdf.delivery_time <= val_split_day)]
+            test_rdf= rdf[rdf.delivery_time > val_split_day]
             
             # generate dataset statistic informations
             additional_statistic = {}
@@ -278,6 +281,7 @@ if __name__ == "__main__":
                 
             train_instance = sample_instance(train_rdf)
             val_instance = sample_instance(val_rdf)
+            test_instance = sample_instance(test_rdf)
             
             dataset_name_template = f"{args.problem}_%s_{args.sample_type}_{city}_{region_id}_{N_EDGES}"
             # save raw instance to file, and can run lade_CVRP_train.py to evaluate it.
@@ -289,11 +293,14 @@ if __name__ == "__main__":
                 pickle.dump(train_instance, f)
             with open(raw_city_dir / (dataset_name_template % "val_raw" + ".pkl"), "wb") as f:
                 pickle.dump(val_instance, f)
+            print(f"3 Dataset Sizes: train {len(train_instance)}, val {len(val_instance)}, test {len(test_instance)}.")
+            with open(raw_city_dir / (dataset_name_template % "test_raw" + ".pkl"), "wb") as f:
+                pickle.dump(test_instance, f)
             with open(raw_dir / (dataset_name_template % "geo_raw" + ".pkl"), "wb") as f:
                 pickle.dump((rdf, graph, gdf_nodes), f)
             # save fixed size problems to another dir
             for size in (100, 200, 500, 1000):
-                instance = sample_instance(val_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
+                instance = sample_instance(test_rdf, windows=['W'], gen_kwargs={'gen_count': 64, 'gen_frac': size})
                 if instance:
                     with open(raw_city_dir / (dataset_name_template % f"test_fixed_{size}" + ".pkl"), "wb") as f:
                         pickle.dump(instance, f)

@@ -125,7 +125,7 @@ def read_performance(log_file, _, max_trials):
         assert objs[-1] == final_obj
         return objs, runtimes, penalties
     
-
+# TODO: Remove
 def write_candidate_CVRP(feat_file, candidate, n_nodes_extend, **unused):
     with open(feat_file, "w") as f:
         f.write(str(n_nodes_extend) + "\n")
@@ -215,7 +215,7 @@ def solve_kopt(instance, instance_name, expanded_node_num, param_dir, instance_d
         subsidiary_output = output_dir / f"{instance_name}_edges.npy"
     else:
         raise RuntimeError(f"No such solve mode: {mode}")
-    if type(candidates) is np.ndarray:
+    if type(candidates) is np.ndarray or type(candidates) is list:
         candidate_type = "external"
     elif type(candidates) is tuple:
         if len(candidates) != 2:
@@ -230,7 +230,7 @@ def solve_kopt(instance, instance_name, expanded_node_num, param_dir, instance_d
         candidate_file = info_dir / f"{instance_name}.candidates"
         with candidate_file.open('w') as f:
             f.write(f"{expanded_node_num}\n")
-            for node_candidates in candidates:
+            for node_candidates in candidates[:expanded_node_num]:
                 f.write(" ".join(map(str, node_candidates)))
                 f.write("\n")
     if mode != "log_perturb" and not node_weights is None:

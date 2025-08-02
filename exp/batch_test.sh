@@ -2,7 +2,7 @@
 exp_name=$1
 problem=$(awk -F _ "{print \$1;}" <<< $exp_name)
 feat_type=$(awk -F _ "{print \$2;}" <<< $exp_name)
-if [[ $feat_type == "baseline" ]]
+if [[ $feat_type == "featnone" ]]
 then
     use_feats="sssp"
 elif [[ $feat_type == "featall" ]]

@@ -132,7 +132,7 @@ class MultiheadAttention(nn.Module):
             else:
                 attn_mask = attn_bias
         
-        # We cannot use torch.nn.functional.scaled_dot_product_attention() as it applies a softmax automatically.
+        # We cannot use torch.nn.functional.scaled_dot_product_attention() as it does not return attn_weights.
         if attn_mask is None:
             raw_qk = torch.bmm(q, k.transpose(1, 2))  
         else:

@@ -40,18 +40,17 @@ def get_args():
 def calculate_loss(problem, y_pred_nodes, y_pred_edges, node_label, edge_label, label_weight, loss_mask, node_num):
     batch_size = y_pred_edges.size(0)
     node_count = y_pred_edges.size(1)
+    y_pred_nodes = y_pred_nodes.squeeze()
     if problem == 'cvrp':
         node_loss_coeff = node_num / 1000
-        node_loss = nn.CrossEntropyLoss(reduction="none").forward(y_pred_nodes.squeeze(), node_label) * node_loss_coeff
+        node_loss = nn.CrossEntropyLoss(reduction="none").forward(y_pred_nodes, node_label) * node_loss_coeff
         node_loss = node_loss.mean()
-        # FIXME: Use log_softmax
-        # p_edges = nn.functional.softmax(y_pred_edges, dim=-1).view(batch_size, -1, 2)
-        # log_p_edges = torch.log(p_edges + 1e-5)
         log_p_edges = nn.functional.log_softmax(y_pred_edges, dim=-1).view(batch_size, -1, 2)
         edge_loss = nn.NLLLoss(label_weight, reduction="none").forward(log_p_edges.transpose(1, 2), edge_label.flatten(-2))
         edge_loss = edge_loss.reshape(batch_size, node_count, -1)[loss_mask]
         edge_loss = edge_loss.mean()
-        reg_loss = torch.linalg.vector_norm(log_p_edges[..., 1].squeeze(), dim=1, ord=2).mean()
+        # reg_loss = torch.linalg.vector_norm(log_p_edges[..., 1].squeeze(), dim=1, ord=2).mean()
+        reg_loss = y_pred_nodes.mean() - torch.log(torch.exp(y_pred_nodes).sum())
     else:
         raise NotImplementedError(problem)
     return node_loss, edge_loss, reg_loss

@@ -48,6 +48,9 @@ class GraphTransformer(nn.Module):
         edge_count = edge_feat.size(1) // node_count
         node_feat = self.nodes_batchnorm(node_feat.transpose(-1, -2)).transpose(-1, -2)
         edge_feat = self.edges_batchnorm(edge_feat.transpose(-1, -2)).transpose(-1, -2)
+        # It can be better if we embed node id instead of pass it to linear.
+        # However, as the depot is always 0 and max_nodes, it may truely learn something.
+        # How sarcastic.
         node_embedding = self.nodes_embedding(node_feat)  # batch_size x n_node x hidden_dimension
         edge_embedding = self.edges_embedding(edge_feat).reshape(
             batch_size, node_count, edge_count, -1) # batch_size x n_node x n_edge x hidden_dimension
